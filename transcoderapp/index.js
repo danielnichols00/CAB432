@@ -1,40 +1,53 @@
-//INDEX FILE - Parts of code copied from tutorials, some generative AI used for troubleshooting and bug fixes
+// index.js
+// INDEX FILE - Parts of code copied from tutorials, some generative AI used for troubleshooting and bug fixes
+const express = require("express");
+const fileUpload = require("express-fileupload");
+const path = require("path");
 
-const express = require('express'); //Start the server
-const fileUpload = require('express-fileupload');
-const JWT = require('./jwt'); //Start JWT for authentication
-const videoRoutes = require('./routes/videos');
+const JWT = require("./jwt");
+const videoRoutes = require("./routes/videos");
+
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-//Admin and CAB432 user profiles - taken from CAB432 Tutorial code
+// --- Demo users (CAB432 tutorial style) ---
 const users = {
-  CAB432: { password: 'supersecret', admin: false },
-  admin:  { password: 'admin',       admin: true  },
+  CAB432: { password: "supersecret", admin: false },
+  admin: { password: "admin", admin: true },
 };
 
-//Middleware
+// --- Middleware ---
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(fileUpload());
 
-//Generate the token for authentication
-app.post('/auth/login', (req, res) => {
-  const { username, password } = req.body;
+// Serve static assets (homepage, CSS, client JS)
+app.use(express.static(path.join(__dirname, "public")));
+
+// --- Auth endpoints ---
+app.post("/auth/login", (req, res) => {
+  const { username, password } = req.body || {};
   const user = users[username];
   if (!user || password !== user.password) return res.sendStatus(401);
   const token = JWT.generateAccessToken({ username });
-  return res.json({ authToken: token });
+  return res.json({ authToken: token, username });
 });
 
-//Admin getter
-app.get('/admin', JWT.authenticateToken, (req, res) => {
+app.get("/admin", JWT.authenticateToken, (req, res) => {
   const user = users[req.user.username];
   if (!user || !user.admin) return res.sendStatus(403);
-  return res.json({ message: 'Admin only content.' });
+  return res.json({ message: "Admin only content." });
 });
 
-app.use('/videos', JWT.authenticateToken, videoRoutes);
+// --- Protected routes ---
+app.use("/videos", JWT.authenticateToken, videoRoutes);
+
+// Serve index.html for any GET that wasn't handled above (SPA-style)
+app.use((req, res, next) => {
+  if (req.method !== "GET") return next();
+  res.sendFile(path.join(__dirname, "/public", "index.html"));
+});
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });

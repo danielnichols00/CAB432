@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Transcoder • Express + FFmpeg</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <div class="brand">
+        <div class="logo">🎬</div>
+        <div class="brand-text">
+          <h1>Transcoder</h1>
+          <p>Fast, reliable video conversion</p>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/" class="nav-link active">Home</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container main">
+    <section class="grid">
+      <!-- Auth -->
+      <div class="card">
+        <h2>Sign in</h2>
+        <p class="muted tiny">Use <code>CAB432/supersecret</code> or <code>admin/admin</code> (demo)</p>
+        <form id="loginForm" class="stack">
+          <div class="field two-col">
+            <div>
+              <label for="username">Username</label>
+              <input id="username" name="username" placeholder="CAB432" required />
+            </div>
+            <div>
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password" placeholder="supersecret" required />
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn primary" type="submit">Sign in</button>
+            <button class="btn" type="button" id="logoutBtn" disabled>Sign out</button>
+          </div>
+          <div id="authState" class="muted"></div>
+        </form>
+      </div>
+
+      <!-- Upload -->
+      <div class="card">
+        <h2>Upload</h2>
+        <p class="muted">Upload a video. Then transcode it below.</p>
+        <form id="uploadForm" class="stack" enctype="multipart/form-data">
+          <div class="field">
+            <label for="video">Video file</label>
+            <input id="video" name="video" type="file" accept="video/*" required />
+          </div>
+          <div class="actions">
+            <button class="btn primary" type="submit" disabled id="uploadBtn">Upload</button>
+            <button class="btn" type="reset" id="resetUpload">Reset</button>
+          </div>
+          <div id="uploadProgress" class="progress-wrap hidden">
+            <div class="progress"><div class="progress-bar" id="uploadBar"></div></div>
+            <div id="uploadText" class="progress-text">Preparing…</div>
+          </div>
+          <div id="uploadResult" class="result hidden"></div>
+        </form>
+      </div>
+
+      <!-- Library & Transcode -->
+      <div class="card">
+        <h2>Library</h2>
+        <p class="muted tiny">Listing comes from <code>GET /videos</code>.</p>
+
+        <div class="field two-col">
+          <div>
+            <label for="format">Output format</label>
+            <select id="format">
+              <option value="mp4">MP4 (H.264/AAC)</option>
+              <option value="webm">WebM (VP9/Opus)</option>
+              <option value="avi">AVI</option>
+            </select>
+          </div>
+          <div>
+            <label for="preset">CPU preset (server-side hint)</label>
+            <select id="preset">
+              <option value="medium">medium</option>
+              <option value="slow">slow</option>
+              <option value="fast">fast</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn" id="refreshBtn" disabled>Refresh</button>
+        </div>
+
+        <ul id="videoList" class="list"></ul>
+        <div id="listError" class="error"></div>
+      </div>
+
+      <!-- API cheat sheet -->
+      <div class="card">
+        <h2>API</h2>
+        <ul class="api-list">
+          <li><code>POST /auth/login</code> → <code>{ authToken }</code></li>
+          <li><code>GET /videos</code> → <code>{ files: [...] }</code></li>
+          <li><code>POST /videos/upload</code> (multipart <code>video</code>)</li>
+          <li><code>POST /videos/transcode</code> (<code>{ filename, format }</code>)</li>
+          <li><code>GET /videos/download/:type/:name</code></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <span>© Transcoder • Express + FFmpeg</span>
+    </div>
+  </footer>
+
+  <script>
+    // --- State ---
+    let token = null;
+
+    // --- Elements ---
+    const loginForm = document.getElementById('loginForm');
+    const authState = document.getElementById('authState');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const uploadForm = document.getElementById('uploadForm');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const uploadProgress = document.getElementById('uploadProgress');
+    const uploadBar = document.getElementById('uploadBar');
+    const uploadText = document.getElementById('uploadText');
+    const uploadResult = document.getElementById('uploadResult');
+    const resetUpload = document.getElementById('resetUpload');
+    const videoList = document.getElementById('videoList');
+    const listError = document.getElementById('listError');
+    const formatSel = document.getElementById('format');
+
+    function enableAuthedUI(enabled){
+      logoutBtn.disabled = !enabled;
+      uploadBtn.disabled = !enabled;
+      refreshBtn.disabled = !enabled;
+    }
+    function show(el){ el.classList.remove('hidden'); }
+    function hide(el){ el.classList.add('hidden'); }
+
+    // --- Login ---
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(loginForm);
+      const body = Object.fromEntries(fd.entries());
+      try {
+        const res = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error('Invalid credentials');
+        const data = await res.json();
+        token = data.authToken;
+        authState.textContent = `Signed in as ${data.username}`;
+        enableAuthedUI(true);
+        loadList();
+      } catch (err) {
+        authState.textContent = 'Login failed: ' + err.message;
+        enableAuthedUI(false);
+      }
+    });
+
+    logoutBtn.addEventListener('click', () => {
+      token = null;
+      authState.textContent = 'Signed out';
+      enableAuthedUI(false);
+      videoList.innerHTML = '';
+    });
+
+    // --- Upload with progress ---
+    uploadForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!token) { alert('Sign in first.'); return; }
+      const fd = new FormData(uploadForm); // field name MUST be "video"
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/videos/upload', true);
+      xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+
+      show(uploadProgress); hide(uploadResult);
+      uploadBar.style.width = '0%'; uploadText.textContent = 'Starting…';
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) {
+          const pct = (evt.loaded / evt.total) * 100;
+          uploadBar.style.width = pct.toFixed(0) + '%';
+          uploadText.textContent = `Uploading… ${pct.toFixed(0)}%`;
+        }
+      };
+
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            const resp = JSON.parse(xhr.responseText);
+            uploadResult.innerHTML = `<div class="success">✅ Uploaded <code>${resp.filename}</code></div>`;
+            loadList();
+          } else {
+            uploadResult.innerHTML = `<div class="error">❌ Upload failed: ${xhr.responseText || xhr.statusText}</div>`;
+          }
+          show(uploadResult); hide(uploadProgress);
+          uploadForm.reset();
+        }
+      };
+
+      xhr.send(fd);
+    });
+
+    resetUpload.addEventListener('click', () => { hide(uploadProgress); hide(uploadResult); });
+
+    // --- List + Transcode ---
+    async function loadList(){
+      listError.textContent = '';
+      videoList.innerHTML = '';
+      if (!token) return;
+
+      try {
+        const res = await fetch('/videos', {
+          headers: { Authorization: 'Bearer ' + token }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const db = await res.json(); // { files: [...] }
+        const files = db.files || [];
+
+        if (!files.length) {
+          videoList.innerHTML = '<li class="muted">No videos yet.</li>';
+          return;
+        }
+
+        videoList.innerHTML = files.map(f => {
+          const uploaded = new Date(f.uploadedAt).toLocaleString();
+          const processed = (f.processed || []).map(name => `
+            <a class="btn link" href="/videos/download/processed/${encodeURIComponent(name)}">Download ${name}</a>
+          `).join(' ');
+
+          return `
+          <li class="list-item">
+            <div class="file-col">
+              <div>
+                <strong>${f.original}</strong>
+                <div class="muted tiny">Owner: ${f.owner || 'unknown'} • Uploaded: ${uploaded}</div>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="btn" data-action="transcode" data-filename="${f.original}">Transcode → ${formatSel.value}</button>
+              <a class="btn link" href="/videos/download/uploads/${encodeURIComponent(f.original)}">Download original</a>
+            </div>
+          </li>`;
+        }).join('');
+      } catch (e) {
+        listError.textContent = 'Could not load list: ' + e.message;
+      }
+    }
+
+    videoList.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-action="transcode"]');
+      if (!btn) return;
+      if (!token) { alert('Sign in first.'); return; }
+
+      const filename = btn.getAttribute('data-filename');
+      const format = document.getElementById('format').value;
+
+      btn.disabled = true; btn.textContent = 'Transcoding…';
+      try {
+        const res = await fetch('/videos/transcode', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + token
+          },
+          body: JSON.stringify({ filename, format })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        await loadList();
+      } catch (err) {
+        alert('Transcode failed: ' + err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = `Transcode → ${format}`;
+      }
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', loadList);
+    enableAuthedUI(false);
+  </script>
+</body>
+</html>
