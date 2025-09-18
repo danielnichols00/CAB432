@@ -4,7 +4,7 @@ const express = require("express");
 const router = express.Router();
 const fs = require("fs");
 const path = require("path");
-const { transcodeVideo } = require("../transcode");
+const { transcodeVideo } = require("../workers/transcode");
 
 //Locations for data
 const DATA_DIR = path.join(__dirname, "..", "data");
@@ -17,7 +17,8 @@ function ensureData() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
   if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
   if (!fs.existsSync(PROCESSED_DIR)) fs.mkdirSync(PROCESSED_DIR);
-  if (!fs.existsSync(DB_PATH)) fs.writeFileSync(DB_PATH, JSON.stringify({ files: [] }, null, 2));
+  if (!fs.existsSync(DB_PATH))
+    fs.writeFileSync(DB_PATH, JSON.stringify({ files: [] }, null, 2));
 }
 ensureData();
 
@@ -28,44 +29,103 @@ function writeDB(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 }
 
-//POST /videos/upload - 201 Created on success
-router.post("/upload", (req, res) => {
-  if (!req.files || !req.files.video) return res.status(400).send("No video uploaded");
+// routes/videos.js (replace your /upload handler)
+router.post("/upload", async (req, res) => {
+  try {
+    const ctype = req.headers["content-type"] || "";
+    if (!ctype.startsWith("multipart/form-data")) {
+      return res
+        .status(415)
+        .send(
+          `Wrong Content-Type. Expected multipart/form-data, got: ${ctype}`
+        );
+    }
 
-  const video = req.files.video;
-  const safeName = `${Date.now()}_${video.name.replace(/\s+/g, "_")}`;
-  const uploadPath = path.join(UPLOADS_DIR, safeName);
+    if (!req.files) {
+      return res
+        .status(400)
+        .send("No files found on request. Did you send FormData?");
+    }
 
-  video.mv(uploadPath, (err) => {
-    if (err) return res.status(500).send(err.message);
+    const video = req.files.video || req.files.file; // accept both names
+    if (!video)
+      return res.status(400).send('Expected field "video" (or "file")');
+
+    const originalName = path.basename(video.name || "upload");
+    const safeName = `${Date.now()}_${originalName.replace(/[^\w.\-]+/g, "_")}`;
+    const uploadPath = path.join(UPLOADS_DIR, safeName);
+
+    await video.mv(uploadPath); // move from temp to uploads
 
     const db = readDB();
     db.files.push({
       owner: req.user?.username || "unknown",
       original: safeName,
       processed: [],
-      uploadedAt: new Date().toISOString()
+      uploadedAt: new Date().toISOString(),
     });
     writeDB(db);
 
-    res.status(201).json({ message: "Video uploaded", filename: safeName });
-  });
+    return res
+      .status(201)
+      .json({ message: "Video uploaded", filename: safeName });
+  } catch (err) {
+    // Helpful messages
+    if (String(err?.message || "").includes("File size limit")) {
+      return res.status(413).send("File too large (hit server limit)");
+    }
+    if (req.aborted) {
+      return res.status(499).send("Client aborted upload");
+    }
+    console.error("Upload error:", err);
+    return res
+      .status(500)
+      .send("Upload failed: " + (err.message || "unknown error"));
+  }
 });
 
-//POST /videos/transcode - calls ffmpeg to transcode video (CPU Intensive)
+// POST /videos/transcode
 router.post("/transcode", async (req, res) => {
-  const { filename, format = "mp4", heavy = true } = req.body;
+  // New shape with sane defaults:
+  let {
+    filename,
+    format = "mp4",
+    preset = "medium", // fast|medium|slow
+    scale = "source", // source|1080p|720p
+    fps = "source", // source|30|60
+    enhance = false, // boolean
+    heavy, // deprecated back-compat
+  } = req.body || {};
+
   if (!filename) return res.status(400).send("filename is required");
+
+  // Back-compat: if an old client sends heavy=true, map to slow+1080p+60fps+enhance
+  if (typeof heavy !== "undefined") {
+    const h = heavy === true || heavy === "true";
+    if (h) {
+      preset = "slow";
+      scale = "1080p";
+      fps = "60";
+      enhance = true;
+    }
+  }
 
   const inputPath = path.join(UPLOADS_DIR, filename);
   if (!fs.existsSync(inputPath)) return res.status(404).send("Video not found");
 
   try {
-    const outputPath = await transcodeVideo(inputPath, { format, heavy });
+    const outputPath = await transcodeVideo(inputPath, {
+      format,
+      preset,
+      scale,
+      fps,
+      enhance,
+    });
     const outName = path.basename(outputPath);
 
+    // update DB
     const db = readDB();
-    const rec = db.files.find(f => f.original === filename);
+    const rec = db.files.find((f) => f.original === filename);
     if (rec) {
       if (!rec.processed.includes(outName)) rec.processed.push(outName);
       rec.lastTranscodedAt = new Date().toISOString();
@@ -75,7 +135,7 @@ router.post("/transcode", async (req, res) => {
         original: filename,
         processed: [outName],
         uploadedAt: new Date().toISOString(),
-        lastTranscodedAt: new Date().toISOString()
+        lastTranscodedAt: new Date().toISOString(),
       });
     }
     writeDB(db);

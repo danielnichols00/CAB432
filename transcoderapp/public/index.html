@@ -17,31 +17,83 @@
         </div>
       </div>
       <nav class="nav">
-        <a href="/" class="nav-link active">Home</a>
+        <a href="/" class="nav-link" id="navHome">Home</a>
+        <a href="#" class="nav-link" id="navLoginBtn">Login</a>
+        <a href="#" class="nav-link" id="navRegisterBtn">Register</a>
+        <a href="#" class="nav-link hidden" id="navLogoutBtn">Logout</a>
       </nav>
     </div>
   </header>
 
+  <!-- Backdrop + Slide-over Register -->
+  <div id="backdrop" class="backdrop hidden" aria-hidden="true"></div>
+  <aside id="registerDrawer" class="drawer" aria-hidden="true" aria-labelledby="drawerTitle" role="dialog">
+    <div class="drawer-header">
+      <h3 id="drawerTitle">Create account</h3>
+      <button class="drawer-close" id="closeDrawer" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <p class="muted tiny">Register with username, email, and password. Then confirm using the code emailed to you.</p>
+
+      <form id="signUpForm" class="stack">
+        <div class="field">
+          <label for="su_username">Username</label>
+          <input id="su_username" name="username" placeholder="yourname" required />
+        </div>
+        <div class="field">
+          <label for="su_email">Email</label>
+          <input id="su_email" name="email" type="email" placeholder="you@example.com" required />
+        </div>
+        <div class="field">
+          <label for="su_password">Password</label>
+          <input id="su_password" name="password" type="password" placeholder="P@ssw0rd!" required />
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="submit">Create account</button>
+        </div>
+        <div id="signUpState" class="muted"></div>
+      </form>
+
+      <hr class="sep" />
+
+      <h4>Confirm account</h4>
+      <p class="muted tiny">Enter the 6-digit code sent to your email.</p>
+
+      <form id="confirmForm" class="stack">
+        <div class="field">
+          <label for="cf_username">Username</label>
+          <input id="cf_username" name="username" placeholder="yourname" required />
+        </div>
+        <div class="field">
+          <label for="cf_code">Confirmation code</label>
+          <input id="cf_code" name="code" placeholder="123456" required />
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="submit">Confirm</button>
+        </div>
+        <div id="confirmState" class="muted"></div>
+      </form>
+    </div>
+  </aside>
+
   <main class="container main">
     <section class="grid">
-      <!-- Auth -->
-      <div class="card">
+      <!-- Login -->
+      <div class="card" id="loginCard">
         <h2>Sign in</h2>
-        <p class="muted tiny">Use <code>CAB432/supersecret</code> or <code>admin/admin</code> (demo)</p>
         <form id="loginForm" class="stack">
           <div class="field two-col">
             <div>
               <label for="username">Username</label>
-              <input id="username" name="username" placeholder="CAB432" required />
+              <input id="username" name="username" placeholder="yourname" required />
             </div>
             <div>
               <label for="password">Password</label>
-              <input id="password" name="password" type="password" placeholder="supersecret" required />
+              <input id="password" name="password" type="password" placeholder="••••••••" required />
             </div>
           </div>
           <div class="actions">
             <button class="btn primary" type="submit">Sign in</button>
-            <button class="btn" type="button" id="logoutBtn" disabled>Sign out</button>
           </div>
           <div id="authState" class="muted"></div>
         </form>
@@ -68,32 +120,64 @@
         </form>
       </div>
 
-      <!-- Library & Transcode -->
+      <!-- Library -->
       <div class="card">
         <h2>Library</h2>
-        <p class="muted tiny">Listing comes from <code>GET /videos</code>.</p>
+        <p class="muted tiny">Switch between uploads and processed outputs.</p>
 
-        <div class="field two-col">
-          <div>
-            <label for="format">Output format</label>
-            <select id="format">
-              <option value="mp4">MP4 (H.264/AAC)</option>
-              <option value="webm">WebM (VP9/Opus)</option>
-              <option value="avi">AVI</option>
-            </select>
-          </div>
-          <div>
-            <label for="preset">CPU preset (server-side hint)</label>
-            <select id="preset">
-              <option value="medium">medium</option>
-              <option value="slow">slow</option>
-              <option value="fast">fast</option>
-            </select>
-          </div>
+        <!-- Tabs -->
+        <div class="tabs">
+          <button class="tab active" id="tabUploads" type="button">Uploads</button>
+          <button class="tab" id="tabProcessed" type="button">Processed</button>
         </div>
 
-        <div class="actions">
-          <button class="btn" id="refreshBtn" disabled>Refresh</button>
+        <!-- Transcode controls (hide when viewing Processed) -->
+        <div id="transcodeControls">
+          <div class="field two-col">
+            <div>
+              <label for="format">Output format</label>
+              <select id="format">
+                <option value="mp4">MP4 (H.264/AAC)</option>
+                <option value="webm">WebM (VP9/Opus)</option>
+                <option value="avi">AVI</option>
+              </select>
+            </div>
+            <div>
+              <label for="preset">Quality / Speed</label>
+              <select id="preset">
+                <option value="fast">fast (bigger file)</option>
+                <option value="medium" selected>medium</option>
+                <option value="slow">slow (smaller file)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field two-col">
+            <div>
+              <label for="scale">Scale</label>
+              <select id="scale">
+                <option value="source" selected>Keep source</option>
+                <option value="1080p">1080p</option>
+                <option value="720p">720p</option>
+              </select>
+            </div>
+            <div>
+              <label for="fps">Frame rate</label>
+              <select id="fps">
+                <option value="source" selected>Keep source</option>
+                <option value="30">30 fps</option>
+                <option value="60">60 fps</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label><input type="checkbox" id="enhance" /> Enhance (mild brightness/contrast)</label>
+          </div>
+
+          <div class="actions">
+            <button class="btn" id="refreshBtn" disabled>Refresh</button>
+          </div>
         </div>
 
         <ul id="videoList" class="list"></ul>
@@ -104,10 +188,12 @@
       <div class="card">
         <h2>API</h2>
         <ul class="api-list">
-          <li><code>POST /auth/login</code> → <code>{ authToken }</code></li>
+          <li><code>POST /auth/sign-up</code> → <code>{ ok }</code></li>
+          <li><code>POST /auth/confirm</code> → <code>{ ok }</code></li>
+          <li><code>POST /auth/login</code> → <code>{ authToken, idToken, accessToken }</code></li>
           <li><code>GET /videos</code> → <code>{ files: [...] }</code></li>
           <li><code>POST /videos/upload</code> (multipart <code>video</code>)</li>
-          <li><code>POST /videos/transcode</code> (<code>{ filename, format }</code>)</li>
+          <li><code>POST /videos/transcode</code> (<code>{ filename, format, preset, scale, fps, enhance }</code>)</li>
           <li><code>GET /videos/download/:type/:name</code></li>
         </ul>
       </div>
@@ -123,35 +209,177 @@
   <script>
     // --- State ---
     let token = null;
+    let currentTab = 'uploads'; // 'uploads' | 'processed'
 
-    // --- Elements ---
-    const loginForm = document.getElementById('loginForm');
-    const authState = document.getElementById('authState');
-    const logoutBtn = document.getElementById('logoutBtn');
-    const uploadForm = document.getElementById('uploadForm');
-    const uploadBtn = document.getElementById('uploadBtn');
-    const refreshBtn = document.getElementById('refreshBtn');
+    // --- Elements (nav/drawer) ---
+    const navLoginBtn    = document.getElementById('navLoginBtn');
+    const navRegisterBtn = document.getElementById('navRegisterBtn');
+    const navLogoutBtn   = document.getElementById('navLogoutBtn');
+    const loginCard      = document.getElementById('loginCard');
+
+    const backdrop       = document.getElementById('backdrop');
+    const drawer         = document.getElementById('registerDrawer');
+    const closeDrawerBtn = document.getElementById('closeDrawer');
+
+    // Forms
+    const signUpForm   = document.getElementById('signUpForm');
+    const signUpState  = document.getElementById('signUpState');
+    const confirmForm  = document.getElementById('confirmForm');
+    const confirmState = document.getElementById('confirmState');
+
+    const loginForm    = document.getElementById('loginForm');
+    const authState    = document.getElementById('authState');
+
+    const uploadForm   = document.getElementById('uploadForm');
+    const uploadBtn    = document.getElementById('uploadBtn');
+    const refreshBtn   = document.getElementById('refreshBtn');
     const uploadProgress = document.getElementById('uploadProgress');
-    const uploadBar = document.getElementById('uploadBar');
-    const uploadText = document.getElementById('uploadText');
+    const uploadBar    = document.getElementById('uploadBar');
+    const uploadText   = document.getElementById('uploadText');
     const uploadResult = document.getElementById('uploadResult');
-    const resetUpload = document.getElementById('resetUpload');
-    const videoList = document.getElementById('videoList');
-    const listError = document.getElementById('listError');
-    const formatSel = document.getElementById('format');
+    const resetUpload  = document.getElementById('resetUpload');
+    const videoList    = document.getElementById('videoList');
+    const listError    = document.getElementById('listError');
+
+    // Transcode controls
+    const transcodeControls = document.getElementById('transcodeControls');
+    const formatSel  = document.getElementById('format');
+    const presetSel  = document.getElementById('preset');
+    const scaleSel   = document.getElementById('scale');
+    const fpsSel     = document.getElementById('fps');
+    const enhanceChk = document.getElementById('enhance');
+
+    // Tabs
+    const tabUploads   = document.getElementById('tabUploads');
+    const tabProcessed = document.getElementById('tabProcessed');
+
+    // UI helpers
+    function show(el){ el.classList.remove('hidden'); }
+    function hide(el){ el.classList.add('hidden'); }
+    function openDrawer(){ drawer.classList.add('open'); backdrop.classList.remove('hidden'); drawer.setAttribute('aria-hidden','false'); }
+    function closeDrawer(){ drawer.classList.remove('open'); backdrop.classList.add('hidden'); drawer.setAttribute('aria-hidden','true'); }
 
     function enableAuthedUI(enabled){
-      logoutBtn.disabled = !enabled;
       uploadBtn.disabled = !enabled;
       refreshBtn.disabled = !enabled;
     }
-    function show(el){ el.classList.remove('hidden'); }
-    function hide(el){ el.classList.add('hidden'); }
+
+    function updateNav(){
+      const loggedIn = !!sessionStorage.getItem('authToken');
+      if (loggedIn){
+        hide(navLoginBtn); hide(navRegisterBtn); show(navLogoutBtn);
+      } else {
+        show(navLoginBtn); show(navRegisterBtn); hide(navLogoutBtn);
+      }
+    }
+
+    function setToken(t, username){
+      token = t;
+      if (t) {
+        sessionStorage.setItem('authToken', t);
+        if (username) sessionStorage.setItem('username', username);
+        authState.textContent = `Signed in as ${username || sessionStorage.getItem('username') || ''}`;
+        enableAuthedUI(true);
+        updateNav();
+        loadList();
+      } else {
+        sessionStorage.removeItem('authToken');
+        sessionStorage.removeItem('username');
+        authState.textContent = 'Signed out';
+        enableAuthedUI(false);
+        updateNav();
+        videoList.innerHTML = '';
+      }
+    }
+
+    function setTab(tab){
+      currentTab = tab;
+      if (tab === 'uploads'){
+        tabUploads.classList.add('active');
+        tabProcessed.classList.remove('active');
+        transcodeControls.classList.remove('hidden'); // show controls when on uploads
+      } else {
+        tabProcessed.classList.add('active');
+        tabUploads.classList.remove('active');
+        transcodeControls.classList.add('hidden'); // hide transcode controls on processed tab
+      }
+      loadList();
+    }
+
+    // Restore on refresh
+    (function restore(){
+      const t = sessionStorage.getItem('authToken');
+      const u = sessionStorage.getItem('username');
+      if (t) setToken(t, u); else updateNav();
+    })();
+
+    // --- Nav actions ---
+    navLoginBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      loginCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    navRegisterBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      openDrawer();
+      document.getElementById('su_username').focus();
+    });
+    navLogoutBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      setToken(null);
+    });
+    backdrop.addEventListener('click', closeDrawer);
+    closeDrawerBtn.addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+    // --- Register ---
+    signUpForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(signUpForm);
+      const body = Object.fromEntries(fd.entries());
+      signUpState.textContent = 'Creating account…';
+      try {
+        const res = await fetch('/auth/sign-up', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Sign-up failed');
+        signUpState.textContent = '✅ Account created. Check your email for the confirmation code.';
+        document.getElementById('cf_username').value = body.username;
+        document.getElementById('cf_code').focus();
+      } catch (err) {
+        signUpState.textContent = '❌ ' + err.message;
+      }
+    });
+
+    // --- Confirm ---
+    confirmForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(confirmForm);
+      const body = Object.fromEntries(fd.entries());
+      confirmState.textContent = 'Confirming…';
+      try {
+        const res = await fetch('/auth/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Confirmation failed');
+        confirmState.textContent = '✅ Account confirmed. You can now sign in.';
+        document.getElementById('username').value = body.username;
+        setTimeout(closeDrawer, 600);
+      } catch (err) {
+        confirmState.textContent = '❌ ' + err.message;
+      }
+    });
 
     // --- Login ---
-    loginForm.addEventListener('submit', async (e) => {
+    const loginFormEl = document.getElementById('loginForm');
+    loginFormEl.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const fd = new FormData(loginForm);
+      const fd = new FormData(loginFormEl);
       const body = Object.fromEntries(fd.entries());
       try {
         const res = await fetch('/auth/login', {
@@ -159,31 +387,20 @@
           headers: { 'Content-Type':'application/json' },
           body: JSON.stringify(body)
         });
-        if (!res.ok) throw new Error('Invalid credentials');
         const data = await res.json();
-        token = data.authToken;
-        authState.textContent = `Signed in as ${data.username}`;
-        enableAuthedUI(true);
-        loadList();
+        if (!res.ok) throw new Error(data.error || 'Invalid credentials');
+        setToken(data.authToken, data.username);
       } catch (err) {
         authState.textContent = 'Login failed: ' + err.message;
         enableAuthedUI(false);
       }
     });
 
-    logoutBtn.addEventListener('click', () => {
-      token = null;
-      authState.textContent = 'Signed out';
-      enableAuthedUI(false);
-      videoList.innerHTML = '';
-    });
-
     // --- Upload with progress ---
     uploadForm.addEventListener('submit', (e) => {
       e.preventDefault();
       if (!token) { alert('Sign in first.'); return; }
-      const fd = new FormData(uploadForm); // field name MUST be "video"
-
+      const fd = new FormData(uploadForm);
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/videos/upload', true);
       xhr.setRequestHeader('Authorization', 'Bearer ' + token);
@@ -215,82 +432,122 @@
 
       xhr.send(fd);
     });
-
     resetUpload.addEventListener('click', () => { hide(uploadProgress); hide(uploadResult); });
 
-    // --- List + Transcode ---
+    // --- List renderers ---
+    function renderUploads(files){
+      if (!files.length) {
+        videoList.innerHTML = '<li class="muted">No videos yet.</li>';
+        return;
+      }
+      videoList.innerHTML = files.map(f => {
+        const uploaded = f.uploadedAt ? new Date(f.uploadedAt).toLocaleString() : '';
+        return `
+        <li class="list-item">
+          <div class="file-col">
+            <div>
+              <strong>${f.original}</strong>
+              <div class="muted tiny">Owner: ${f.owner || 'unknown'}${uploaded ? ' • Uploaded: ' + uploaded : ''}</div>
+              ${Array.isArray(f.processed) && f.processed.length ? `<div class="tiny muted">Processed: ${f.processed.length}</div>` : ''}
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn" data-action="transcode" data-filename="${f.original}">
+              Transcode → ${formatSel.value}/${presetSel.value}
+            </button>
+            <a class="btn link" href="/videos/download/uploads/${encodeURIComponent(f.original)}">Download original</a>
+          </div>
+        </li>`;
+      }).join('');
+    }
+
+    function renderProcessed(files){
+      const items = [];
+      for (const f of files) {
+        for (const p of (f.processed || [])) {
+          items.push({ name: p, original: f.original, owner: f.owner || 'unknown' });
+        }
+      }
+      if (!items.length) {
+        videoList.innerHTML = '<li class="muted">No processed outputs yet.</li>';
+        return;
+      }
+      // sort by name (or keep as-is)
+      items.sort((a,b) => a.name.localeCompare(b.name));
+      videoList.innerHTML = items.map(it => {
+        // Try to extract variant from name: originalBase_variant.ext
+        const parts = it.name.split('.');
+        const ext = parts.pop();
+        const filenameNoExt = parts.join('.');
+        const variant = filenameNoExt.replace(/^[^_]+_?/, ''); // keep text after first underscore
+        return `
+        <li class="list-item">
+          <div class="file-col">
+            <div>
+              <strong>${it.name}</strong>
+              <div class="muted tiny">From: ${it.original} • Owner: ${it.owner}${variant ? ' • Variant: ' + variant : ''}</div>
+            </div>
+          </div>
+          <div class="actions">
+            <a class="btn link" href="/videos/download/processed/${encodeURIComponent(it.name)}">Download</a>
+            <a class="btn link" href="/videos/download/uploads/${encodeURIComponent(it.original)}">Original</a>
+          </div>
+        </li>`;
+      }).join('');
+    }
+
+    // --- List loader (switch by tab) ---
     async function loadList(){
       listError.textContent = '';
       videoList.innerHTML = '';
       if (!token) return;
 
       try {
-        const res = await fetch('/videos', {
-          headers: { Authorization: 'Bearer ' + token }
-        });
+        const res = await fetch('/videos', { headers: { Authorization: 'Bearer ' + token } });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        const db = await res.json(); // { files: [...] }
+        const db = await res.json();
         const files = db.files || [];
-
-        if (!files.length) {
-          videoList.innerHTML = '<li class="muted">No videos yet.</li>';
-          return;
-        }
-
-        videoList.innerHTML = files.map(f => {
-          const uploaded = new Date(f.uploadedAt).toLocaleString();
-          const processed = (f.processed || []).map(name => `
-            <a class="btn link" href="/videos/download/processed/${encodeURIComponent(name)}">Download ${name}</a>
-          `).join(' ');
-
-          return `
-          <li class="list-item">
-            <div class="file-col">
-              <div>
-                <strong>${f.original}</strong>
-                <div class="muted tiny">Owner: ${f.owner || 'unknown'} • Uploaded: ${uploaded}</div>
-              </div>
-            </div>
-            <div class="actions">
-              <button class="btn" data-action="transcode" data-filename="${f.original}">Transcode → ${formatSel.value}</button>
-              <a class="btn link" href="/videos/download/uploads/${encodeURIComponent(f.original)}">Download original</a>
-            </div>
-          </li>`;
-        }).join('');
+        if (currentTab === 'uploads') renderUploads(files);
+        else renderProcessed(files);
       } catch (e) {
         listError.textContent = 'Could not load list: ' + e.message;
       }
     }
 
+    // Tab clicks
+    tabUploads.addEventListener('click', () => setTab('uploads'));
+    tabProcessed.addEventListener('click', () => setTab('processed'));
+
+    // Transcode click (uploads list)
     videoList.addEventListener('click', async (e) => {
       const btn = e.target.closest('button[data-action="transcode"]');
       if (!btn) return;
       if (!token) { alert('Sign in first.'); return; }
 
       const filename = btn.getAttribute('data-filename');
-      const format = document.getElementById('format').value;
+      const format   = formatSel.value;
+      const preset   = presetSel.value;
+      const scale    = scaleSel.value;
+      const fps      = fpsSel.value;
+      const enhance  = enhanceChk.checked;
 
       btn.disabled = true; btn.textContent = 'Transcoding…';
       try {
         const res = await fetch('/videos/transcode', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer ' + token
-          },
-          body: JSON.stringify({ filename, format })
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+          body: JSON.stringify({ filename, format, preset, scale, fps, enhance })
         });
         if (!res.ok) throw new Error(await res.text());
         await loadList();
       } catch (err) {
         alert('Transcode failed: ' + err.message);
       } finally {
-        btn.disabled = false; btn.textContent = `Transcode → ${format}`;
+        btn.disabled = false; btn.textContent = `Transcode → ${format}/${preset}`;
       }
     });
 
     document.getElementById('refreshBtn').addEventListener('click', loadList);
-    enableAuthedUI(false);
   </script>
 </body>
 </html>
