@@ -1,4 +1,5 @@
 // auth/cognito.js
+require("dotenv").config();
 const {
   CognitoIdentityProviderClient,
   SignUpCommand,

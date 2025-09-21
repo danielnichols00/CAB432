@@ -2,3 +2,4 @@ node_modules/
 data/uploads/
 data/processed/
 .env
+data/db.json

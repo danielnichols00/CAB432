@@ -5,29 +5,13 @@ const router = express.Router();
 const fs = require("fs");
 const path = require("path");
 const { transcodeVideo } = require("../workers/transcode");
+const { putObject } = require("../s3");
+const { putVideoMetadata, getVideoMetadata, queryAllVideos } = require("../dynamodb");
 
-//Locations for data
+//Locations for temp data (still needed for ffmpeg)
 const DATA_DIR = path.join(__dirname, "..", "data");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const PROCESSED_DIR = path.join(DATA_DIR, "processed");
-const DB_PATH = path.join(DATA_DIR, "db.json");
-
-//Ensure database exists
-function ensureData() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-  if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
-  if (!fs.existsSync(PROCESSED_DIR)) fs.mkdirSync(PROCESSED_DIR);
-  if (!fs.existsSync(DB_PATH))
-    fs.writeFileSync(DB_PATH, JSON.stringify({ files: [] }, null, 2));
-}
-ensureData();
-
-function readDB() {
-  return JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
-}
-function writeDB(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
-}
 
 // routes/videos.js (replace your /upload handler)
 router.post("/upload", async (req, res) => {
@@ -51,24 +35,20 @@ router.post("/upload", async (req, res) => {
     if (!video)
       return res.status(400).send('Expected field "video" (or "file")');
 
-    const originalName = path.basename(video.name || "upload");
-    const safeName = `${Date.now()}_${originalName.replace(/[^\w.\-]+/g, "_")}`;
-    const uploadPath = path.join(UPLOADS_DIR, safeName);
+  const originalName = path.basename(video.name || "upload");
+  const safeName = `${Date.now()}_${originalName.replace(/[^\w.\-]+/g, "_")}`;
+  // Test log to verify console output and function call
+  console.log('Calling putObject for:', safeName);
+  // Upload file to S3 instead of local folder
+  await putObject(safeName, video.data);
 
-    await video.mv(uploadPath); // move from temp to uploads
 
-    const db = readDB();
-    db.files.push({
-      owner: req.user?.username || "unknown",
-      original: safeName,
-      processed: [],
-      uploadedAt: new Date().toISOString(),
-    });
-    writeDB(db);
+    // Store metadata in DynamoDB
+    await putVideoMetadata(safeName, [], req.user?.username || "unknown");
 
     return res
       .status(201)
-      .json({ message: "Video uploaded", filename: safeName });
+      .json({ message: "Video uploaded to S3", filename: safeName });
   } catch (err) {
     // Helpful messages
     if (String(err?.message || "").includes("File size limit")) {
@@ -110,11 +90,21 @@ router.post("/transcode", async (req, res) => {
     }
   }
 
-  const inputPath = path.join(UPLOADS_DIR, filename);
-  if (!fs.existsSync(inputPath)) return res.status(404).send("Video not found");
+  // Download input file from S3
+  const { getObject, putObject } = require("../s3");
+  let inputBuffer;
+  try {
+    inputBuffer = await getObject(filename, true); // get as Buffer
+  } catch (err) {
+    return res.status(404).send("Video not found in S3");
+  }
+
+  // Save to temp file for ffmpeg
+  const tempInputPath = path.join(UPLOADS_DIR, filename);
+  fs.writeFileSync(tempInputPath, inputBuffer);
 
   try {
-    const outputPath = await transcodeVideo(inputPath, {
+    const outputPath = await transcodeVideo(tempInputPath, {
       format,
       preset,
       scale,
@@ -123,24 +113,19 @@ router.post("/transcode", async (req, res) => {
     });
     const outName = path.basename(outputPath);
 
-    // update DB
-    const db = readDB();
-    const rec = db.files.find((f) => f.original === filename);
-    if (rec) {
-      if (!rec.processed.includes(outName)) rec.processed.push(outName);
-      rec.lastTranscodedAt = new Date().toISOString();
-    } else {
-      db.files.push({
-        owner: req.user?.username || "unknown",
-        original: filename,
-        processed: [outName],
-        uploadedAt: new Date().toISOString(),
-        lastTranscodedAt: new Date().toISOString(),
-      });
-    }
-    writeDB(db);
+    // Upload processed file to S3
+    const processedBuffer = fs.readFileSync(outputPath);
+    await putObject(outName, processedBuffer);
 
-    res.json({ message: "Video transcoded", output: outName });
+
+    // Update metadata in DynamoDB
+    // Get existing metadata
+    let meta = await getVideoMetadata(filename, req.user?.username || "unknown");
+    let processed = meta?.processed || [];
+    if (!processed.includes(outName)) processed.push(outName);
+    await putVideoMetadata(filename, processed, req.user?.username || "unknown");
+
+    res.json({ message: "Video transcoded and uploaded to S3", output: outName });
   } catch (err) {
     res.status(500).send(err.message);
   }
@@ -148,16 +133,25 @@ router.post("/transcode", async (req, res) => {
 
 //GET /videos - lists metadata (seconjd data type)
 router.get("/", (_req, res) => {
-  const db = readDB();
-  res.json(db);
+  // List all videos for this user
+  queryAllVideos()
+    .then((items) => res.json({ files: items }))
+    .catch((err) => {
+      console.error("Error querying videos:", err);
+      res.status(500).send("Failed to query videos");
+    });
 });
 
 //GET /videos/download/
-router.get("/download/:type/:name", (req, res) => {
-  const base = req.params.type === "processed" ? PROCESSED_DIR : UPLOADS_DIR;
-  const filePath = path.join(base, req.params.name);
-  if (!fs.existsSync(filePath)) return res.sendStatus(404);
-  res.download(filePath);
+router.get("/download/:type/:name", async (req, res) => {
+  const { getPresignedUrl } = require("../s3");
+  try {
+    const presignedUrl = await getPresignedUrl(req.params.name);
+    if (!presignedUrl) return res.sendStatus(404);
+    res.json({ url: presignedUrl });
+  } catch (err) {
+    res.status(500).send("Failed to generate S3 download URL");
+  }
 });
 
 module.exports = router;
