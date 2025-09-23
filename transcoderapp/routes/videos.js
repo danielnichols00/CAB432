@@ -5,18 +5,27 @@ const router = express.Router();
 const fs = require("fs");
 const path = require("path");
 const { transcodeVideo } = require("../workers/transcode");
-const { putObject } = require("../s3");
+const { putObject } = require("../db/s3");
 const {
   putVideoMetadata,
   getVideoMetadata,
   queryAllVideos,
   scanAllVideos,
-} = require("../dynamodb");
+} = require("../db/dynamodb");
 
 //Locations for temp data (still needed for ffmpeg)
 const DATA_DIR = path.join(__dirname, "..", "data");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const PROCESSED_DIR = path.join(DATA_DIR, "processed");
+
+function ownerFromReq(req) {
+  return (
+    req.user?.["cognito:username"] ||
+    req.user?.username ||
+    (req.user?.email ? req.user.email.split("@")[0] : null) ||
+    "unknown"
+  );
+}
 
 // routes/videos.js (replace your /upload handler)
 router.post("/upload", async (req, res) => {
@@ -30,42 +39,37 @@ router.post("/upload", async (req, res) => {
         );
     }
 
-    if (!req.files) {
+    if (!req.files)
       return res
         .status(400)
         .send("No files found on request. Did you send FormData?");
-    }
-
-    const video = req.files.video || req.files.file; // accept both names
+    const video = req.files.video || req.files.file;
     if (!video)
       return res.status(400).send('Expected field "video" (or "file")');
 
-    const originalName = path.basename(video.name || "upload");
+    const originalName = require("path").basename(video.name || "upload");
     const safeName = `${Date.now()}_${originalName.replace(/[^\w.\-]+/g, "_")}`;
-    // Test log to verify console output and function call
-    console.log("Calling putObject for:", safeName);
-    // Upload file to S3 instead of local folder
+
     const body =
       video.data && video.data.length
         ? video.data
-        : fs.readFileSync(video.tempFilePath); //
+        : require("fs").readFileSync(video.tempFilePath);
 
-    await putObject(safeName, body, video.mimetype); //
+    const owner = ownerFromReq(req);
 
-  // Store metadata in DynamoDB
-  await putVideoMetadata(safeName, [], req.user?.username || "unknown");
+    // (optional) tag S3 object with owner metadata
+    await putObject(safeName, body, video.mimetype, { owner });
+
+    // metadata in DynamoDB
+    await putVideoMetadata(safeName, [], owner);
 
     return res
       .status(201)
-      .json({ message: "Video uploaded to S3", filename: safeName });
+      .json({ message: "Video uploaded to S3", filename: safeName, owner });
   } catch (err) {
-    // Helpful messages
-    if (String(err?.message || "").includes("File size limit")) {
-      return res.status(413).send("File too large (hit server limit)");
-    }
-    if (req.aborted) {
-      return res.status(499).send("Client aborted upload");
-    }
+    if (String(err?.message || "").includes("File size limit"))
+      return res.status(413).send("File too large");
+    if (req.aborted) return res.status(499).send("Client aborted upload");
     console.error("Upload error:", err);
     return res
       .status(500)
@@ -75,40 +79,37 @@ router.post("/upload", async (req, res) => {
 
 // POST /videos/transcode
 router.post("/transcode", async (req, res) => {
-  // New shape with sane defaults:
   let {
     filename,
     format = "mp4",
-    preset = "medium", // fast|medium|slow
-    scale = "source", // source|1080p|720p
-    fps = "source", // source|30|60
-    enhance = false, // boolean
-    heavy, // deprecated back-compat
+    preset = "medium",
+    scale = "source",
+    fps = "source",
+    enhance = false,
+    heavy,
   } = req.body || {};
-
   if (!filename) return res.status(400).send("filename is required");
 
-  // Back-compat: if an old client sends heavy=true, map to slow+1080p+60fps+enhance
-  if (typeof heavy !== "undefined") {
-    const h = heavy === true || heavy === "true";
-    if (h) {
-      preset = "slow";
-      scale = "1080p";
-      fps = "60";
-      enhance = true;
-    }
+  // heavy back-compat…
+  if (typeof heavy !== "undefined" && (heavy === true || heavy === "true")) {
+    preset = "slow";
+    scale = "1080p";
+    fps = "60";
+    enhance = true;
   }
 
-  // Download input file from S3
   const { getObject, putObject } = require("../s3");
+
+  const owner = ownerFromReq(req);
+
+  // download input from S3
   let inputBuffer;
   try {
-    inputBuffer = await getObject(filename, true); // get as Buffer
-  } catch (err) {
+    inputBuffer = await getObject(filename, true);
+  } catch {
     return res.status(404).send("Video not found in S3");
   }
 
-  // Save to temp file for ffmpeg
   const tempInputPath = path.join(UPLOADS_DIR, filename);
   fs.writeFileSync(tempInputPath, inputBuffer);
 
@@ -122,27 +123,22 @@ router.post("/transcode", async (req, res) => {
     });
     const outName = path.basename(outputPath);
 
-    // Upload processed file to S3
+    // upload processed back to S3 (optionally tag with owner)
     const processedBuffer = fs.readFileSync(outputPath);
-    await putObject(outName, processedBuffer);
+    await putObject(outName, processedBuffer, "video/" + format, { owner });
 
-    // Update metadata in DynamoDB
-    // Get existing metadata
-    let meta = await getVideoMetadata(
-      filename,
-      req.user?.username || "unknown"
-    );
-    let processed = meta?.processed || [];
+    // update DynamoDB metadata for THIS owner
+    const meta = await getVideoMetadata(filename, owner);
+    const processed = Array.isArray(meta?.processed)
+      ? meta.processed.slice()
+      : [];
     if (!processed.includes(outName)) processed.push(outName);
-    await putVideoMetadata(
-      filename,
-      processed,
-      req.user?.username || "unknown"
-    );
+    await putVideoMetadata(filename, processed, owner);
 
     res.json({
       message: "Video transcoded and uploaded to S3",
       output: outName,
+      owner,
     });
   } catch (err) {
     res.status(500).send(err.message);
@@ -154,11 +150,10 @@ router.get("/", async (req, res) => {
   try {
     const groups = req.user?.["cognito:groups"] || [];
     const isAdmin = groups.includes("admin");
-    const owner =
-      req.user?.username || req.user?.["cognito:username"] || "unknown";
+    const owner = isAdmin ? "*" : ownerFromReq(req); // "*" => all owners
 
-    const items = isAdmin ? await scanAllVideos() : await queryAllVideos(owner);
-    res.json({ files: items });
+    const items = await queryAllVideos(owner);
+    res.json({ files: items, owner, isAdmin });
   } catch (err) {
     console.error("Error querying videos:", err);
     res.status(500).send("Failed to query videos");
@@ -167,7 +162,7 @@ router.get("/", async (req, res) => {
 
 //GET /videos/download/
 router.get("/download/:type/:name", async (req, res) => {
-  const { getPresignedUrl } = require("../s3");
+  const { getPresignedUrl } = require("../db/s3");
   try {
     const presignedUrl = await getPresignedUrl(req.params.name);
     if (!presignedUrl) return res.sendStatus(404);

@@ -55,7 +55,7 @@ function transcodeVideo(
 
     const base = path.parse(inputPath).name;
 
-    // 👇 Build a stable, readable variant tag
+    // Build a stable, readable variant tag
     const variant = [
       preset, // fast|medium|slow
       scale === "source" ? "src" : scale, // src|1080p|720p
@@ -69,6 +69,17 @@ function transcodeVideo(
     const outputPath = path.join(PROCESSED_DIR, outName);
 
     const cmd = ffmpeg(inputPath);
+
+    // keep ffmpeg quiet by default
+    cmd.addOptions([
+      "-nostdin",
+      "-hide_banner",
+      "-nostats",
+      "-loglevel",
+      process.env.FFMPEG_LOGLEVEL || "error", // error|warning|info|debug
+    ]);
+    // swallow ffmpeg stderr lines (prevents console flood)
+    cmd.on("stderr", () => {});
 
     if (format === "mp4") {
       cmd

@@ -50,6 +50,12 @@ async function scanAllVideos() {
 
 // Query all videos for this user
 async function queryAllVideos(owner = qutUsername) {
+  if (owner === "*") {
+    const result = await docClient.send(
+      new ScanCommand({ TableName: tableName })
+    );
+    return result.Items || [];
+  }
   const command = new QueryCommand({
     TableName: tableName,
     KeyConditionExpression: "#pk = :owner",
@@ -57,7 +63,7 @@ async function queryAllVideos(owner = qutUsername) {
     ExpressionAttributeValues: { ":owner": owner },
   });
   const result = await docClient.send(command);
-  return result.Items;
+  return result.Items || [];
 }
 
 // Update processed array for a video
