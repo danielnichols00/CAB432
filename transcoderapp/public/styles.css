@@ -118,3 +118,11 @@ input, select{ width:100%; padding:10px 12px; border-radius:10px; background:#0d
 }
 .tab:hover{ background:#0c1328; }
 .tab.active{ border-color:var(--brand); background:#120f2a; }
+.badge{
+  padding:4px 8px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:#120f2a;
+  color:var(--brand-2);
+  font-size:12px;
+}

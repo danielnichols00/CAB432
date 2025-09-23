@@ -86,12 +86,17 @@ app.post("/auth/login", express.json(), async (req, res) => {
   }
 });
 
-// Optional: whoami
 app.get("/auth/me", authenticateCognito, (req, res) => {
+  const groups = req.user["cognito:groups"] || [];
+  const username =
+    req.user["cognito:username"] || req.user.username || req.user.email;
+
   res.json({
     sub: req.user.sub,
+    username,
     email: req.user.email,
-    groups: req.user["cognito:groups"] || [],
+    groups,
+    isAdmin: groups.includes("admin"),
   });
 });
 

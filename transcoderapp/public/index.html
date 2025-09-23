@@ -21,6 +21,8 @@
         <a href="#" class="nav-link" id="navLoginBtn">Login</a>
         <a href="#" class="nav-link" id="navRegisterBtn">Register</a>
         <a href="#" class="nav-link hidden" id="navLogoutBtn">Logout</a>
+        <span id="roleBadge" class="badge hidden">Admin</span>
+
       </nav>
     </div>
   </header>
@@ -220,6 +222,8 @@
     const backdrop       = document.getElementById('backdrop');
     const drawer         = document.getElementById('registerDrawer');
     const closeDrawerBtn = document.getElementById('closeDrawer');
+    const roleBadge = document.getElementById('roleBadge');
+
 
     // Forms
     const signUpForm   = document.getElementById('signUpForm');
@@ -264,6 +268,22 @@
       refreshBtn.disabled = !enabled;
     }
 
+    async function loadIdentity(){
+  try {
+    const res = await fetch('/auth/me', {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!res.ok) throw new Error('auth/me failed');
+    const me = await res.json();
+    sessionStorage.setItem('isAdmin', me.isAdmin ? '1' : '0');
+    sessionStorage.setItem('groups', JSON.stringify(me.groups || []));
+    roleBadge.classList.toggle('hidden', !me.isAdmin);
+  } catch (e) {
+    roleBadge.classList.add('hidden');
+  }
+}
+
+
     function updateNav(){
       const loggedIn = !!sessionStorage.getItem('authToken');
       if (loggedIn){
@@ -273,24 +293,29 @@
       }
     }
 
-    function setToken(t, username){
-      token = t;
-      if (t) {
-        sessionStorage.setItem('authToken', t);
-        if (username) sessionStorage.setItem('username', username);
-        authState.textContent = `Signed in as ${username || sessionStorage.getItem('username') || ''}`;
-        enableAuthedUI(true);
-        updateNav();
-        loadList();
-      } else {
-        sessionStorage.removeItem('authToken');
-        sessionStorage.removeItem('username');
-        authState.textContent = 'Signed out';
-        enableAuthedUI(false);
-        updateNav();
-        videoList.innerHTML = '';
-      }
+  function setToken(t, username){
+    token = t;
+    if (t) {
+      sessionStorage.setItem('authToken', t);
+      if (username) sessionStorage.setItem('username', username);
+      authState.textContent = `Signed in as ${username || sessionStorage.getItem('username') || ''}`;
+      enableAuthedUI(true);
+      updateNav();
+      loadIdentity();   // 👈 fetch groups/isAdmin and show badge
+      loadList();
+    } else {
+      sessionStorage.removeItem('authToken');
+      sessionStorage.removeItem('username');
+      sessionStorage.removeItem('isAdmin');
+      sessionStorage.removeItem('groups');
+      roleBadge.classList.add('hidden');
+      authState.textContent = 'Signed out';
+      enableAuthedUI(false);
+      updateNav();
+      videoList.innerHTML = '';
     }
+  }
+
 
     function setTab(tab){
       currentTab = tab;

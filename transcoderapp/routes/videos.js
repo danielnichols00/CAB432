@@ -6,7 +6,12 @@ const fs = require("fs");
 const path = require("path");
 const { transcodeVideo } = require("../workers/transcode");
 const { putObject } = require("../s3");
-const { putVideoMetadata, getVideoMetadata, queryAllVideos } = require("../dynamodb");
+const {
+  putVideoMetadata,
+  getVideoMetadata,
+  queryAllVideos,
+  scanAllVideos,
+} = require("../dynamodb");
 
 //Locations for temp data (still needed for ffmpeg)
 const DATA_DIR = path.join(__dirname, "..", "data");
@@ -35,13 +40,12 @@ router.post("/upload", async (req, res) => {
     if (!video)
       return res.status(400).send('Expected field "video" (or "file")');
 
-  const originalName = path.basename(video.name || "upload");
-  const safeName = `${Date.now()}_${originalName.replace(/[^\w.\-]+/g, "_")}`;
-  // Test log to verify console output and function call
-  console.log('Calling putObject for:', safeName);
-  // Upload file to S3 instead of local folder
-  await putObject(safeName, video.data);
-
+    const originalName = path.basename(video.name || "upload");
+    const safeName = `${Date.now()}_${originalName.replace(/[^\w.\-]+/g, "_")}`;
+    // Test log to verify console output and function call
+    console.log("Calling putObject for:", safeName);
+    // Upload file to S3 instead of local folder
+    await putObject(safeName, video.data);
 
     // Store metadata in DynamoDB
     await putVideoMetadata(safeName, [], req.user?.username || "unknown");
@@ -117,29 +121,43 @@ router.post("/transcode", async (req, res) => {
     const processedBuffer = fs.readFileSync(outputPath);
     await putObject(outName, processedBuffer);
 
-
     // Update metadata in DynamoDB
     // Get existing metadata
-    let meta = await getVideoMetadata(filename, req.user?.username || "unknown");
+    let meta = await getVideoMetadata(
+      filename,
+      req.user?.username || "unknown"
+    );
     let processed = meta?.processed || [];
     if (!processed.includes(outName)) processed.push(outName);
-    await putVideoMetadata(filename, processed, req.user?.username || "unknown");
+    await putVideoMetadata(
+      filename,
+      processed,
+      req.user?.username || "unknown"
+    );
 
-    res.json({ message: "Video transcoded and uploaded to S3", output: outName });
+    res.json({
+      message: "Video transcoded and uploaded to S3",
+      output: outName,
+    });
   } catch (err) {
     res.status(500).send(err.message);
   }
 });
 
 //GET /videos - lists metadata (seconjd data type)
-router.get("/", (_req, res) => {
-  // List all videos for this user
-  queryAllVideos()
-    .then((items) => res.json({ files: items }))
-    .catch((err) => {
-      console.error("Error querying videos:", err);
-      res.status(500).send("Failed to query videos");
-    });
+router.get("/", async (req, res) => {
+  try {
+    const groups = req.user?.["cognito:groups"] || [];
+    const isAdmin = groups.includes("admin");
+    const owner =
+      req.user?.username || req.user?.["cognito:username"] || "unknown";
+
+    const items = isAdmin ? await scanAllVideos() : await queryAllVideos(owner);
+    res.json({ files: items });
+  } catch (err) {
+    console.error("Error querying videos:", err);
+    res.status(500).send("Failed to query videos");
+  }
 });
 
 //GET /videos/download/

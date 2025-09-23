@@ -1,6 +1,13 @@
 require("dotenv").config();
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const {
+  DynamoDBDocumentClient,
+  PutCommand,
+  GetCommand,
+  QueryCommand,
+  UpdateCommand,
+  ScanCommand,
+} = require("@aws-sdk/lib-dynamodb");
 
 const qutUsername = process.env.QUT_USERNAME;
 const tableName = "n11713739-videos"; // Use your actual table name
@@ -33,6 +40,12 @@ async function getVideoMetadata(filename, owner = qutUsername) {
   });
   const result = await docClient.send(command);
   return result.Item;
+}
+
+async function scanAllVideos() {
+  const command = new ScanCommand({ TableName: tableName });
+  const result = await docClient.send(command);
+  return result.Items || [];
 }
 
 // Query all videos for this user
@@ -70,4 +83,5 @@ module.exports = {
   getVideoMetadata,
   queryAllVideos,
   updateProcessed,
+  scanAllVideos,
 };
