@@ -475,57 +475,49 @@
     }
 
     // --- List renderers ---
-    function renderUploads(files){
-      if (!files.length) {
+    function renderUploads(items){
+      if (!items || !items.length) {
         videoList.innerHTML = '<li class="muted">No videos yet.</li>';
         return;
       }
-      videoList.innerHTML = files.map(f => {
-        const uploaded = f.uploadedAt ? new Date(f.uploadedAt).toLocaleString() : '';
-        const owner = f["qut-username"] || f.owner || "unknown";
-        const name  = f.filename || 'Untitled';
-        const processedCount = Array.isArray(f.processed) ? f.processed.length : 0;
+      videoList.innerHTML = items.map(it => {
+        const uploaded = it.lastModified ? new Date(it.lastModified).toLocaleString() : '';
         return `
-        <li class="list-item">
-          <div class="file-col">
-            <div>
-              <strong>${name}</strong>
-              <div class="muted tiny">Owner: ${owner}${uploaded ? ' • Uploaded: ' + uploaded : ''}</div>
-              ${processedCount ? `<div class="tiny muted">Processed: ${processedCount}</div>` : ''}
+          <li class="list-item">
+            <div class="file-col">
+              <div>
+                <strong>${it.name}</strong>
+                <div class="muted tiny">Owner: ${it.owner}${uploaded ? ' • Uploaded: ' + uploaded : ''}</div>
+              </div>
             </div>
-          </div>
-          <div class="actions">
-            <button class="btn" data-action="transcode" data-filename="${name}">
-              Transcode → ${formatSel.value}/${presetSel.value}
-            </button>
-            <button class="btn link" data-action="download" data-type="uploads" data-name="${name}">Download original</button>
-          </div>
-        </li>`;
+            <div class="actions">
+              <button class="btn" data-action="transcode" data-filename="${it.name}">
+                Transcode → ${formatSel.value}/${presetSel.value}
+              </button>
+              <button class="btn link" data-action="download" data-type="uploads" data-name="${it.name}">
+                Download original
+              </button>
+            </div>
+          </li>`;
       }).join('');
     }
 
-    function renderProcessed(files){
-      const items = [];
-      for (const f of files) {
-        const owner = f["qut-username"] || f.owner || "unknown";
-        const original = f.filename || 'Unknown';
-        for (const p of (f.processed || [])) {
-          items.push({ name: p, original, owner });
-        }
-      }
-      if (!items.length) {
-        videoList.innerHTML = '<li class="muted">No processed outputs yet.</li>';
-        return;
-      }
-      items.sort((a,b) => a.name.localeCompare(b.name));
-      videoList.innerHTML = items.map(it => {
-        const variant = extractVariant(it.name);
-        return `
+function renderProcessed(items){
+    if (!items || !items.length) {
+      videoList.innerHTML = '<li class="muted">No processed outputs yet.</li>';
+      return;
+    }
+    items.sort((a,b) => a.name.localeCompare(b.name));
+    videoList.innerHTML = items.map(it => {
+      const variant = it.variant || '';
+      return `
         <li class="list-item">
           <div class="file-col">
             <div>
               <strong>${it.name}</strong>
-              <div class="muted tiny">From: ${it.original} • Owner: ${it.owner}${variant ? ' • Variant: ' + variant : ''}</div>
+              <div class="muted tiny">
+                From: ${it.original} • Owner: ${it.owner}${variant ? ' • Variant: ' + variant : ''}
+              </div>
             </div>
           </div>
           <div class="actions">
@@ -533,26 +525,44 @@
             <button class="btn link" data-action="download" data-type="uploads" data-name="${it.original}">Original</button>
           </div>
         </li>`;
-      }).join('');
-    }
+    }).join('');
+  }
 
-    // --- List loader (switch by tab) ---
-    async function loadList(){
-      listError.textContent = '';
-      videoList.innerHTML = '';
-      if (!token) return;
 
-      try {
-        const res = await fetch('/videos', { headers: { Authorization: 'Bearer ' + token } });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const db = await res.json();
-        const files = db.files || [];
-        if (currentTab === 'uploads') renderUploads(files);
-        else renderProcessed(files);
-      } catch (e) {
-        listError.textContent = 'Could not load list: ' + e.message;
+
+      // --- List loader (switch by tab) ---
+  async function loadList(){
+    listError.textContent = '';
+    videoList.innerHTML = '';
+    if (!token) { listError.textContent = 'Not signed in.'; return; }
+
+    const endpoint = currentTab === 'uploads' ? '/videos/uploads' : '/videos/processed';
+    try {
+      const res = await fetch(endpoint, {
+        headers: { Authorization: 'Bearer ' + token }
+      });
+
+      // Better diagnostics
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        console.debug('[loadList] endpoint:', endpoint, 'status:', res.status, 'body:', text);
+        if (res.status === 401) {
+          listError.textContent = 'Session expired or not authorized. Please sign in again.';
+          // optional: auto sign-out UI
+          setToken(null);
+          return;
+        }
+        throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ''}`);
       }
+
+      const data = await res.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (currentTab === 'uploads') renderUploads(items);
+      else renderProcessed(items);
+    } catch (e) {
+      listError.textContent = 'Could not load list: ' + (e.message || e);
     }
+  }
 
     // Tab clicks
     tabUploads.addEventListener('click', () => setTab('uploads'));

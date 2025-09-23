@@ -8,6 +8,7 @@ const {
   PutObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
+  ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
@@ -177,6 +178,25 @@ async function getPresignedUrl(objectKey, expiresIn = 3600) {
   }
 }
 
+async function listByPrefix(prefix) {
+  const out = [];
+  let ContinuationToken = undefined;
+  do {
+    const resp = await s3Client.send(
+      new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: prefix,
+        ContinuationToken,
+      })
+    );
+    (resp.Contents || []).forEach((o) => out.push(o));
+    ContinuationToken = resp.IsTruncated
+      ? resp.NextContinuationToken
+      : undefined;
+  } while (ContinuationToken);
+  return out;
+}
+
 module.exports = {
   bucketExists,
   createBucket,
@@ -184,4 +204,5 @@ module.exports = {
   putObject,
   getObject,
   getPresignedUrl,
+  listByPrefix,
 };
