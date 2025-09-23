@@ -98,7 +98,7 @@ router.post("/transcode", async (req, res) => {
     enhance = true;
   }
 
-  const { getObject, putObject } = require("../s3");
+  const { getObject, putObject } = require("../db/s3");
 
   const owner = ownerFromReq(req);
 
@@ -150,10 +150,22 @@ router.get("/", async (req, res) => {
   try {
     const groups = req.user?.["cognito:groups"] || [];
     const isAdmin = groups.includes("admin");
-    const owner = isAdmin ? "*" : ownerFromReq(req); // "*" => all owners
+    const owner = isAdmin
+      ? "*" // you may be using Scan for admin
+      : req.user?.["cognito:username"] || req.user?.username || "unknown";
 
     const items = await queryAllVideos(owner);
-    res.json({ files: items, owner, isAdmin });
+
+    // 🔧 Normalize for the front-end:
+    const files = (items || []).map((it) => ({
+      owner: it.owner || it["qut-username"] || "unknown",
+      original: it.original || it.filename, // UI expects 'original'
+      processed: Array.isArray(it.processed) ? it.processed : [],
+      uploadedAt: it.uploadedAt || null,
+      lastTranscodedAt: it.lastTranscodedAt || null,
+    }));
+
+    res.json({ files, owner, isAdmin });
   } catch (err) {
     console.error("Error querying videos:", err);
     res.status(500).send("Failed to query videos");

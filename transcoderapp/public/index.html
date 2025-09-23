@@ -22,7 +22,6 @@
         <a href="#" class="nav-link" id="navRegisterBtn">Register</a>
         <a href="#" class="nav-link hidden" id="navLogoutBtn">Logout</a>
         <span id="roleBadge" class="badge hidden">Admin</span>
-
       </nav>
     </div>
   </header>
@@ -193,10 +192,11 @@
           <li><code>POST /auth/sign-up</code> → <code>{ ok }</code></li>
           <li><code>POST /auth/confirm</code> → <code>{ ok }</code></li>
           <li><code>POST /auth/login</code> → <code>{ authToken, idToken, accessToken }</code></li>
+          <li><code>GET /auth/me</code> → <code>{ sub, email, groups }</code></li>
           <li><code>GET /videos</code> → <code>{ files: [...] }</code></li>
           <li><code>POST /videos/upload</code> (multipart <code>video</code>)</li>
           <li><code>POST /videos/transcode</code> (<code>{ filename, format, preset, scale, fps, enhance }</code>)</li>
-          <li><code>GET /videos/download/:type/:name</code></li>
+          <li><code>GET /videos/download/:type/:name</code> → <code>{ url }</code></li>
         </ul>
       </div>
     </section>
@@ -222,8 +222,7 @@
     const backdrop       = document.getElementById('backdrop');
     const drawer         = document.getElementById('registerDrawer');
     const closeDrawerBtn = document.getElementById('closeDrawer');
-    const roleBadge = document.getElementById('roleBadge');
-
+    const roleBadge      = document.getElementById('roleBadge');
 
     // Forms
     const signUpForm   = document.getElementById('signUpForm');
@@ -269,20 +268,19 @@
     }
 
     async function loadIdentity(){
-  try {
-    const res = await fetch('/auth/me', {
-      headers: { Authorization: 'Bearer ' + token }
-    });
-    if (!res.ok) throw new Error('auth/me failed');
-    const me = await res.json();
-    sessionStorage.setItem('isAdmin', me.isAdmin ? '1' : '0');
-    sessionStorage.setItem('groups', JSON.stringify(me.groups || []));
-    roleBadge.classList.toggle('hidden', !me.isAdmin);
-  } catch (e) {
-    roleBadge.classList.add('hidden');
-  }
-}
-
+      try {
+        const res = await fetch('/auth/me', { headers: { Authorization: 'Bearer ' + token } });
+        if (!res.ok) throw new Error('auth/me failed');
+        const me = await res.json();
+        const groups = Array.isArray(me.groups) ? me.groups : [];
+        const isAdmin = groups.map(g => String(g).toLowerCase()).includes('admin');
+        sessionStorage.setItem('isAdmin', isAdmin ? '1' : '0');
+        sessionStorage.setItem('groups', JSON.stringify(groups));
+        roleBadge.classList.toggle('hidden', !isAdmin);
+      } catch {
+        roleBadge.classList.add('hidden');
+      }
+    }
 
     function updateNav(){
       const loggedIn = !!sessionStorage.getItem('authToken');
@@ -293,40 +291,39 @@
       }
     }
 
-  function setToken(t, username){
-    token = t;
-    if (t) {
-      sessionStorage.setItem('authToken', t);
-      if (username) sessionStorage.setItem('username', username);
-      authState.textContent = `Signed in as ${username || sessionStorage.getItem('username') || ''}`;
-      enableAuthedUI(true);
-      updateNav();
-      loadIdentity();   // 👈 fetch groups/isAdmin and show badge
-      loadList();
-    } else {
-      sessionStorage.removeItem('authToken');
-      sessionStorage.removeItem('username');
-      sessionStorage.removeItem('isAdmin');
-      sessionStorage.removeItem('groups');
-      roleBadge.classList.add('hidden');
-      authState.textContent = 'Signed out';
-      enableAuthedUI(false);
-      updateNav();
-      videoList.innerHTML = '';
+    function setToken(t, username){
+      token = t;
+      if (t) {
+        sessionStorage.setItem('authToken', t);
+        if (username) sessionStorage.setItem('username', username);
+        authState.textContent = `Signed in as ${username || sessionStorage.getItem('username') || ''}`;
+        enableAuthedUI(true);
+        updateNav();
+        loadIdentity();
+        loadList();
+      } else {
+        sessionStorage.removeItem('authToken');
+        sessionStorage.removeItem('username');
+        sessionStorage.removeItem('isAdmin');
+        sessionStorage.removeItem('groups');
+        roleBadge.classList.add('hidden');
+        authState.textContent = 'Signed out';
+        enableAuthedUI(false);
+        updateNav();
+        videoList.innerHTML = '';
+      }
     }
-  }
-
 
     function setTab(tab){
       currentTab = tab;
       if (tab === 'uploads'){
         tabUploads.classList.add('active');
         tabProcessed.classList.remove('active');
-        transcodeControls.classList.remove('hidden'); // show controls when on uploads
+        transcodeControls.classList.remove('hidden');
       } else {
         tabProcessed.classList.add('active');
         tabUploads.classList.remove('active');
-        transcodeControls.classList.add('hidden'); // hide transcode controls on processed tab
+        transcodeControls.classList.add('hidden');
       }
       loadList();
     }
@@ -459,6 +456,24 @@
     });
     resetUpload.addEventListener('click', () => { hide(uploadProgress); hide(uploadResult); });
 
+    // --- Helpers ---
+    function extractVariant(name){
+      // strip extension first, then match our variant suffix
+      const noExt = name.replace(/\.[^.]+$/, '');
+      const m = noExt.match(/_(fast|medium|slow)_(src|1080p|720p)_(src|\d+fps)(?:_enh)?$/);
+      return m ? m[0].slice(1) : '';
+    }
+
+    async function presignedDownload(type, name){
+      const res = await fetch(`/videos/download/${encodeURIComponent(type)}/${encodeURIComponent(name)}`, {
+        headers: { Authorization: 'Bearer ' + token }
+      });
+      if (!res.ok) throw new Error('Failed to get download URL');
+      const { url } = await res.json();
+      if (!url) throw new Error('No URL returned');
+      window.open(url, '_blank');
+    }
+
     // --- List renderers ---
     function renderUploads(files){
       if (!files.length) {
@@ -467,22 +482,23 @@
       }
       videoList.innerHTML = files.map(f => {
         const uploaded = f.uploadedAt ? new Date(f.uploadedAt).toLocaleString() : '';
-        // Try to show the actual owner (username) if present
         const owner = f["qut-username"] || f.owner || "unknown";
+        const name  = f.filename || 'Untitled';
+        const processedCount = Array.isArray(f.processed) ? f.processed.length : 0;
         return `
         <li class="list-item">
           <div class="file-col">
             <div>
-              <strong>${f.filename || 'Untitled'}</strong>
+              <strong>${name}</strong>
               <div class="muted tiny">Owner: ${owner}${uploaded ? ' • Uploaded: ' + uploaded : ''}</div>
-              ${Array.isArray(f.processed) && f.processed.length ? `<div class="tiny muted">Processed: ${f.processed.length}</div>` : ''}
+              ${processedCount ? `<div class="tiny muted">Processed: ${processedCount}</div>` : ''}
             </div>
           </div>
           <div class="actions">
-            <button class="btn" data-action="transcode" data-filename="${f.filename}">
+            <button class="btn" data-action="transcode" data-filename="${name}">
               Transcode → ${formatSel.value}/${presetSel.value}
             </button>
-            <a class="btn link" href="/videos/download/uploads/${encodeURIComponent(f.filename)}">Download original</a>
+            <button class="btn link" data-action="download" data-type="uploads" data-name="${name}">Download original</button>
           </div>
         </li>`;
       }).join('');
@@ -491,22 +507,19 @@
     function renderProcessed(files){
       const items = [];
       for (const f of files) {
+        const owner = f["qut-username"] || f.owner || "unknown";
+        const original = f.filename || 'Unknown';
         for (const p of (f.processed || [])) {
-          items.push({ name: p, original: f.original, owner: f.owner || 'unknown' });
+          items.push({ name: p, original, owner });
         }
       }
       if (!items.length) {
         videoList.innerHTML = '<li class="muted">No processed outputs yet.</li>';
         return;
       }
-      // sort by name (or keep as-is)
       items.sort((a,b) => a.name.localeCompare(b.name));
       videoList.innerHTML = items.map(it => {
-        // Try to extract variant from name: originalBase_variant.ext
-        const parts = it.name.split('.');
-        const ext = parts.pop();
-        const filenameNoExt = parts.join('.');
-        const variant = filenameNoExt.replace(/^[^_]+_?/, ''); // keep text after first underscore
+        const variant = extractVariant(it.name);
         return `
         <li class="list-item">
           <div class="file-col">
@@ -516,8 +529,8 @@
             </div>
           </div>
           <div class="actions">
-            <a class="btn link" href="/videos/download/processed/${encodeURIComponent(it.name)}">Download</a>
-            <a class="btn link" href="/videos/download/uploads/${encodeURIComponent(it.original)}">Original</a>
+            <button class="btn link" data-action="download" data-type="processed" data-name="${it.name}">Download</button>
+            <button class="btn link" data-action="download" data-type="uploads" data-name="${it.original}">Original</button>
           </div>
         </li>`;
       }).join('');
@@ -545,32 +558,45 @@
     tabUploads.addEventListener('click', () => setTab('uploads'));
     tabProcessed.addEventListener('click', () => setTab('processed'));
 
-    // Transcode click (uploads list)
+    // Click delegation (transcode + download)
     videoList.addEventListener('click', async (e) => {
-      const btn = e.target.closest('button[data-action="transcode"]');
-      if (!btn) return;
-      if (!token) { alert('Sign in first.'); return; }
+      const actionBtn = e.target.closest('button[data-action]');
+      if (!actionBtn) return;
+      const action = actionBtn.getAttribute('data-action');
 
-      const filename = btn.getAttribute('data-filename');
-      const format   = formatSel.value;
-      const preset   = presetSel.value;
-      const scale    = scaleSel.value;
-      const fps      = fpsSel.value;
-      const enhance  = enhanceChk.checked;
+      if (action === 'transcode') {
+        if (!token) { alert('Sign in first.'); return; }
+        const filename = actionBtn.getAttribute('data-filename');
+        const format   = formatSel.value;
+        const preset   = presetSel.value;
+        const scale    = scaleSel.value;
+        const fps      = fpsSel.value;
+        const enhance  = enhanceChk.checked;
 
-      btn.disabled = true; btn.textContent = 'Transcoding…';
-      try {
-        const res = await fetch('/videos/transcode', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-          body: JSON.stringify({ filename, format, preset, scale, fps, enhance })
-        });
-        if (!res.ok) throw new Error(await res.text());
-        await loadList();
-      } catch (err) {
-        alert('Transcode failed: ' + err.message);
-      } finally {
-        btn.disabled = false; btn.textContent = `Transcode → ${format}/${preset}`;
+        actionBtn.disabled = true; actionBtn.textContent = 'Transcoding…';
+        try {
+          const res = await fetch('/videos/transcode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+            body: JSON.stringify({ filename, format, preset, scale, fps, enhance })
+          });
+          if (!res.ok) throw new Error(await res.text());
+          await loadList();
+        } catch (err) {
+          alert('Transcode failed: ' + err.message);
+        } finally {
+          actionBtn.disabled = false; actionBtn.textContent = `Transcode → ${format}/${preset}`;
+        }
+      }
+
+      if (action === 'download') {
+        const type = actionBtn.getAttribute('data-type');      // uploads | processed
+        const name = actionBtn.getAttribute('data-name');      // filename or processed name
+        try {
+          await presignedDownload(type, name);
+        } catch (err) {
+          alert('Download failed: ' + err.message);
+        }
       }
     });
 
