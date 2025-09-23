@@ -52,8 +52,8 @@ router.post("/upload", async (req, res) => {
 
     await putObject(safeName, body, video.mimetype); //
 
-    // Store metadata in DynamoDB
-    await putVideoMetadata(safeName, [], req.user?.username || "unknown");
+  // Store metadata in DynamoDB
+  await putVideoMetadata(safeName, [], req.user?.username || "unknown");
 
     return res
       .status(201)

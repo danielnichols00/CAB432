@@ -467,20 +467,22 @@
       }
       videoList.innerHTML = files.map(f => {
         const uploaded = f.uploadedAt ? new Date(f.uploadedAt).toLocaleString() : '';
+        // Try to show the actual owner (username) if present
+        const owner = f["qut-username"] || f.owner || "unknown";
         return `
         <li class="list-item">
           <div class="file-col">
             <div>
-              <strong>${f.original}</strong>
-              <div class="muted tiny">Owner: ${f.owner || 'unknown'}${uploaded ? ' • Uploaded: ' + uploaded : ''}</div>
+              <strong>${f.filename || 'Untitled'}</strong>
+              <div class="muted tiny">Owner: ${owner}${uploaded ? ' • Uploaded: ' + uploaded : ''}</div>
               ${Array.isArray(f.processed) && f.processed.length ? `<div class="tiny muted">Processed: ${f.processed.length}</div>` : ''}
             </div>
           </div>
           <div class="actions">
-            <button class="btn" data-action="transcode" data-filename="${f.original}">
+            <button class="btn" data-action="transcode" data-filename="${f.filename}">
               Transcode → ${formatSel.value}/${presetSel.value}
             </button>
-            <a class="btn link" href="/videos/download/uploads/${encodeURIComponent(f.original)}">Download original</a>
+            <a class="btn link" href="/videos/download/uploads/${encodeURIComponent(f.filename)}">Download original</a>
           </div>
         </li>`;
       }).join('');
