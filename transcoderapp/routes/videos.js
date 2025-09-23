@@ -45,7 +45,12 @@ router.post("/upload", async (req, res) => {
     // Test log to verify console output and function call
     console.log("Calling putObject for:", safeName);
     // Upload file to S3 instead of local folder
-    await putObject(safeName, video.data);
+    const body =
+      video.data && video.data.length
+        ? video.data
+        : fs.readFileSync(video.tempFilePath); //
+
+    await putObject(safeName, body, video.mimetype); //
 
     // Store metadata in DynamoDB
     await putVideoMetadata(safeName, [], req.user?.username || "unknown");

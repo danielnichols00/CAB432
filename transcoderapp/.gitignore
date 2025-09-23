@@ -1,5 +1,6 @@
 node_modules/
 data/uploads/
 data/processed/
+data/tmp/
 .env
 data/db.json
