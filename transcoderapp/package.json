@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "setup:nginx": "bash scripts/setup-nginx.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -25,6 +26,7 @@
     "jose": "^6.1.0",
     "jsonwebtoken": "^9.0.2",
     "lowdb": "^7.0.1",
-    "mime": "^4.1.0"
+    "mime": "^4.1.0",
+    "nginx": "^1.1.0"
   }
 }
