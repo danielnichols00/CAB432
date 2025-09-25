@@ -8,14 +8,22 @@ const {
   UpdateCommand,
   ScanCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const { getParameter } = require("../config/parameterStore");
 
 const qutUsername = process.env.QUT_USERNAME;
-const tableName = "n11713739-videos"; // Use your actual table name
+let tableName, region;
+let client, docClient;
 
-const client = new DynamoDBClient({ region: "ap-southeast-2" });
-const docClient = DynamoDBDocumentClient.from(client);
+async function initDynamo() {
+  tableName = await getParameter("/n11713739/dynamotable");
+  region = await getParameter("/n11713739/aws_region");
+  client = new DynamoDBClient({ region: region || "ap-southeast-2" });
+  docClient = DynamoDBDocumentClient.from(client);
+}
 
-// Add or update video metadata
+initDynamo();
+
+// ADD AND UPDATE VIDEO METADATA
 async function putVideoMetadata(filename, processed = [], owner = qutUsername) {
   const command = new PutCommand({
     TableName: tableName,
@@ -29,7 +37,7 @@ async function putVideoMetadata(filename, processed = [], owner = qutUsername) {
   return await docClient.send(command);
 }
 
-// Get metadata for a specific video
+// GET METADATA FOR A VIDEO
 async function getVideoMetadata(filename, owner = qutUsername) {
   const command = new GetCommand({
     TableName: tableName,
@@ -48,7 +56,7 @@ async function scanAllVideos() {
   return result.Items || [];
 }
 
-// Query all videos for this user
+// QUERY ALL VIDEOS FOR USER
 async function queryAllVideos(owner = qutUsername) {
   if (owner === "*") {
     const result = await docClient.send(
@@ -66,7 +74,7 @@ async function queryAllVideos(owner = qutUsername) {
   return result.Items || [];
 }
 
-// Update processed array for a video
+// UPDATE VIDEO ARRAY
 async function updateProcessed(filename, processed, owner = qutUsername) {
   const command = new UpdateCommand({
     TableName: tableName,

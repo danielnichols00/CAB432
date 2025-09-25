@@ -423,36 +423,39 @@
       e.preventDefault();
       if (!token) { alert('Sign in first.'); return; }
       const fd = new FormData(uploadForm);
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/videos/upload', true);
-      xhr.setRequestHeader('Authorization', 'Bearer ' + token);
-
+      const file = fd.get('video') || fd.get('file');
+      if (!file) { alert('No file selected.'); return; }
+      const filename = file.name || 'upload.mp4';
       show(uploadProgress); hide(uploadResult);
-      uploadBar.style.width = '0%'; uploadText.textContent = 'Starting…';
+      uploadBar.style.width = '0%'; uploadText.textContent = 'Requesting upload URL…';
 
-      xhr.upload.onprogress = (evt) => {
-        if (evt.lengthComputable) {
-          const pct = (evt.loaded / evt.total) * 100;
-          uploadBar.style.width = pct.toFixed(0) + '%';
-          uploadText.textContent = `Uploading… ${pct.toFixed(0)}%`;
-        }
-      };
-
-      xhr.onreadystatechange = () => {
-        if (xhr.readyState === 4) {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            const resp = JSON.parse(xhr.responseText);
-            uploadResult.innerHTML = `<div class="success">✅ Uploaded <code>${resp.filename}</code></div>`;
-            loadList();
-          } else {
-            uploadResult.innerHTML = `<div class="error">❌ Upload failed: ${xhr.responseText || xhr.statusText}</div>`;
-          }
-          show(uploadResult); hide(uploadProgress);
-          uploadForm.reset();
-        }
-      };
-
-      xhr.send(fd);
+      // Step 1: Get pre-signed S3 upload URL from backend
+  fetch('/videos/upload-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ filename, contentType: file.type || 'application/octet-stream' })
+      })
+      .then(res => res.json())
+      .then(async ({ url, key, safeName }) => {
+        if (!url) throw new Error('Failed to get S3 upload URL');
+        uploadBar.style.width = '10%'; uploadText.textContent = 'Uploading to S3…';
+        // Step 2: Upload file directly to S3
+        const s3Res = await fetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          body: file
+        });
+        if (!s3Res.ok) throw new Error('S3 upload failed');
+        uploadBar.style.width = '100%'; uploadText.textContent = 'Upload complete!';
+        uploadResult.innerHTML = `<div class="success">✅ Uploaded <code>${safeName}</code> to S3</div>`;
+        loadList();
+        show(uploadResult); hide(uploadProgress);
+        uploadForm.reset();
+      })
+      .catch(err => {
+        uploadResult.innerHTML = `<div class="error">❌ Upload failed: ${err.message}</div>`;
+        show(uploadResult); hide(uploadProgress);
+      });
     });
     resetUpload.addEventListener('click', () => { hide(uploadProgress); hide(uploadResult); });
 

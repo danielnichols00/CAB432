@@ -9,7 +9,7 @@ const {
   REFRESH_TTL,
 } = require("../config/env");
 
-// Helpers
+// HELPERS
 const currentSecret = () => JWT_SECRETS[0];
 const allSecrets = () => JWT_SECRETS;
 
@@ -23,7 +23,7 @@ function toUser(payload) {
   };
 }
 
-// ---- Signers ----
+// SIGNERS
 function signAccessToken({ sub, username, roles = [], ver }) {
   if (!sub) sub = username; // fallback
   const jti = crypto.randomUUID();
@@ -66,7 +66,7 @@ function verifyToken(token) {
   throw lastErr;
 }
 
-// ---- Middleware ----
+// MIDDLEWARE
 function authenticateAccess(req, res, next) {
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;

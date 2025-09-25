@@ -46,7 +46,7 @@ function secretHash(username) {
     .digest("base64");
 }
 
-// ---------- API wrappers ----------
+// API WRAPPERS
 async function signUp({ username, password, email }) {
   await cip.send(
     new SignUpCommand({
@@ -91,7 +91,7 @@ async function login({ username, password }) {
       AuthParameters: {
         USERNAME: username,
         PASSWORD: password,
-        SECRET_HASH: secretHash(username), // NOTE: UPPERCASE key here
+        SECRET_HASH: secretHash(username),
       },
     })
   );
@@ -105,7 +105,7 @@ async function login({ username, password }) {
   };
 }
 
-// ---------- Express middleware ----------
+// EXPRESS MIDDLEWARE
 async function authenticateCognito(req, res, next) {
   try {
     const hdr = req.headers.authorization || "";
@@ -118,7 +118,7 @@ async function authenticateCognito(req, res, next) {
       audience: clientId,
     });
 
-    req.user = payload; // sub, email, "cognito:groups", etc.
+    req.user = payload; // sub, email, "cognito:groups"
     next();
   } catch {
     return res.sendStatus(401);

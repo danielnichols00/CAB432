@@ -1,3 +1,4 @@
+// DYNAMO TABLE SETUP SCRIPT
 require("dotenv").config();
 const { DynamoDBClient, CreateTableCommand } = require("@aws-sdk/client-dynamodb");
 

@@ -1,4 +1,3 @@
-// s3.js
 require("dotenv").config();
 const path = require("path");
 const {
@@ -11,13 +10,20 @@ const {
   ListObjectsV2Command,
 } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { getParameter } = require("../config/parameterStore");
 
-const region = process.env.AWS_REGION || "ap-southeast-2";
-const bucketName = process.env.S3_BUCKET_NAME || "n11713739-bucket";
+let region, bucketName;
 const qutUsername = process.env.QUT_USERNAME || "n11713739@qut.edu.au";
 const purpose = process.env.PURPOSE || "prac";
+let s3Client;
 
-const s3Client = new S3Client({ region });
+async function initS3() {
+  region = await getParameter("/n11713739/aws_region");
+  bucketName = await getParameter("/n11713739/s3bucket");
+  s3Client = new S3Client({ region: region || "ap-southeast-2" });
+}
+
+initS3();
 
 // ---------- Helpers ----------
 function guessContentType(objectKey, fallback) {
@@ -91,6 +97,23 @@ async function tagBucket() {
   }
 }
 
+// Generate a pre-signed PUT URL for uploading to S3
+async function getPresignedUploadUrl(objectKey, expiresIn = 3600, contentType = "application/octet-stream") {
+  try {
+    const cmd = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: objectKey,
+      ContentType: contentType,
+    });
+    const url = await getSignedUrl(s3Client, cmd, { expiresIn });
+    console.log("[S3] Presigned upload URL ok for:", objectKey);
+    return url;
+  } catch (err) {
+    console.error("[S3] Presigned upload URL error:", objectKey, err);
+    return null;
+  }
+}
+
 // ---------- Object Ops ----------
 /**
  * Upload object to S3.
@@ -135,7 +158,7 @@ async function putObject(objectKey, body, contentType, metadata) {
 }
 
 /**
- * Get object from S3.
+ * GET S3 OBJECT
  * @param {string} objectKey
  * @param {boolean} asBuffer - when true, returns Buffer; otherwise returns string.
  */
@@ -158,7 +181,7 @@ async function getObject(objectKey, asBuffer = false) {
 }
 
 /**
- * Generate a time-limited GET URL.
+ * GENERATE TIME LIMITED GET-URL
  * @param {string} objectKey
  * @param {number} expiresIn seconds
  */
@@ -205,4 +228,5 @@ module.exports = {
   getObject,
   getPresignedUrl,
   listByPrefix,
+  getPresignedUploadUrl,
 };
