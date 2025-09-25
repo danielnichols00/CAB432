@@ -8,8 +8,7 @@ memcached.aSet = (key, value, ttl) => new Promise((resolve, reject) => {
   memcached.set(key, value, ttl, (err) => err ? reject(err) : resolve());
 });
 // routes/videos.js
-const express = require("express");
-const router = express.Router();
+// ...existing code...
 const fs = require("fs");
 const path = require("path");
 const { transcodeVideo } = require("../workers/transcode");
@@ -24,6 +23,22 @@ const {
 } = require("../db/s3");
 
 // PRE-SIGNED UPLOAD URL
+const express = require("express");
+const router = express.Router();
+// RECORD UPLOAD METADATA (for direct S3 uploads)
+router.post("/record-upload", async (req, res) => {
+  try {
+    const { safeName, owner } = req.body;
+    if (!safeName || !owner) {
+      return res.status(400).json({ error: "Missing safeName or owner" });
+    }
+    await putVideoMetadata(safeName, [], owner);
+    return res.status(201).json({ message: "Metadata recorded", filename: safeName, owner });
+  } catch (err) {
+    console.error("Record upload error:", err);
+    return res.status(500).json({ error: err.message || "Failed to record metadata" });
+  }
+});
 router.post("/upload-url", async (req, res) => {
   try {
     const owner = ownerFromReq(req);

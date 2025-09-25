@@ -9,7 +9,6 @@
 <body>
   <header class="site-header">
     <div class="container header-inner">
-      <div class="brand">
         <div class="logo">🎬</div>
         <div class="brand-text">
           <h1>Transcoder</h1>
@@ -209,6 +208,14 @@
   </footer>
 
   <script>
+    // Helper to parse JWT and get username
+    function parseJwt(token) {
+      try {
+        return JSON.parse(atob(token.split('.')[1]));
+      } catch (e) {
+        return {};
+      }
+    }
     // --- State ---
     let token = null;
     let currentTab = 'uploads'; // 'uploads' | 'processed'
@@ -446,6 +453,14 @@
           body: file
         });
         if (!s3Res.ok) throw new Error('S3 upload failed');
+        // Step 3: Record metadata in DynamoDB
+        const userInfo = parseJwt(token);
+        const owner = userInfo["cognito:username"] || userInfo.username || (userInfo.email ? userInfo.email.split("@")[0] : "unknown");
+        await fetch('/videos/record-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ safeName, owner })
+        });
         uploadBar.style.width = '100%'; uploadText.textContent = 'Upload complete!';
         uploadResult.innerHTML = `<div class="success">✅ Uploaded <code>${safeName}</code> to S3</div>`;
         loadList();
