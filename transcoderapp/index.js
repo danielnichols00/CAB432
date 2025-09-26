@@ -26,7 +26,21 @@ const { loadSecrets } = require("./bootstrap/secrets");
   const videoRoutes = require("./routes/videos");
 
   const app = express();
-  const PORT = process.env.PORT || 3000;
+
+  // When behind an ALB/Nginx, we want X-Forwarded-Proto/IP respected
+  app.set("trust proxy", true);
+
+  const PORT = Number(process.env.PORT || 3000);
+  const HOST = process.env.HOST || "0.0.0.0"; // bind all interfaces for EC2
+
+  // Prefer explicit PUBLIC_URL (e.g. https://api.example.com)
+  // Else compute from DOMAIN (e.g. http://api.example.com)
+  // Else show localhost:PORT just for convenience in logs
+  const PUBLIC_URL =
+    process.env.PUBLIC_URL ||
+    (process.env.DOMAIN
+      ? `http://${process.env.DOMAIN}`
+      : `http://localhost:${PORT}`);
 
   // ---- Ensure local data dirs exist (temp only; videos live in S3) ----
   const DATA_DIR = path.join(__dirname, "data");
@@ -137,15 +151,26 @@ const { loadSecrets } = require("./bootstrap/secrets");
   });
 
   // ---- Start server ----
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, HOST, () => {
     console.log("DATA dirs:", {
       data: DATA_DIR,
       tmp: TMP_DIR,
       uploads: UPLOADS_DIR,
       processed: PROCESSED_DIR,
     });
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server listening on ${HOST}:${PORT}`);
+    console.log(`Public URL: ${PUBLIC_URL}`);
+    console.log(`Health: ${PUBLIC_URL}/health`);
   });
+
+  server.on("error", (err) => {
+    console.error("Server error:", err.message);
+    process.exitCode = 1;
+  });
+
+  // optional: graceful shutdown
+  process.on("SIGTERM", () => server.close(() => process.exit(0)));
+  process.on("SIGINT", () => server.close(() => process.exit(0)));
 })().catch((err) => {
   console.error("Fatal startup error:", err);
   process.exit(1);
