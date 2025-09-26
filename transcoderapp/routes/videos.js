@@ -1,14 +1,16 @@
-// MEMCACHED SETUP
-const Memcached = require('memcached');
-const memcached = new Memcached('n11713739-cache.km2jzi.0001.apse2.cache.amazonaws.com:11211');
-memcached.aGet = (key) => new Promise((resolve, reject) => {
-  memcached.get(key, (err, data) => err ? reject(err) : resolve(data));
-});
-memcached.aSet = (key, value, ttl) => new Promise((resolve, reject) => {
-  memcached.set(key, value, ttl, (err) => err ? reject(err) : resolve());
-});
-// routes/videos.js
-// ...existing code...
+const Memcached = require("memcached");
+const memcached = new Memcached(
+  "n11713739-cache.km2jzi.0001.apse2.cache.amazonaws.com:11211"
+);
+memcached.aGet = (key) =>
+  new Promise((resolve, reject) => {
+    memcached.get(key, (err, data) => (err ? reject(err) : resolve(data)));
+  });
+memcached.aSet = (key, value, ttl) =>
+  new Promise((resolve, reject) => {
+    memcached.set(key, value, ttl, (err) => (err ? reject(err) : resolve()));
+  });
+
 const fs = require("fs");
 const path = require("path");
 const { transcodeVideo } = require("../workers/transcode");
@@ -33,10 +35,14 @@ router.post("/record-upload", async (req, res) => {
       return res.status(400).json({ error: "Missing safeName or owner" });
     }
     await putVideoMetadata(safeName, [], owner);
-    return res.status(201).json({ message: "Metadata recorded", filename: safeName, owner });
+    return res
+      .status(201)
+      .json({ message: "Metadata recorded", filename: safeName, owner });
   } catch (err) {
     console.error("Record upload error:", err);
-    return res.status(500).json({ error: err.message || "Failed to record metadata" });
+    return res
+      .status(500)
+      .json({ error: err.message || "Failed to record metadata" });
   }
 });
 router.post("/upload-url", async (req, res) => {
@@ -46,7 +52,11 @@ router.post("/upload-url", async (req, res) => {
     if (!filename) return res.status(400).send("filename is required");
     const safeName = `${Date.now()}_${filename.replace(/[^\w.\-]+/g, "_")}`;
     const key = `uploads/${owner}/${safeName}`;
-    const url = await getPresignedUploadUrl(key, 3600, contentType || "application/octet-stream");
+    const url = await getPresignedUploadUrl(
+      key,
+      3600,
+      contentType || "application/octet-stream"
+    );
     if (!url) return res.status(500).send("Failed to generate upload URL");
     res.json({ url, key, safeName });
   } catch (err) {
@@ -54,11 +64,7 @@ router.post("/upload-url", async (req, res) => {
     res.status(500).send("Failed to generate S3 upload URL");
   }
 });
-const {
-  putVideoMetadata,
-  getVideoMetadata,
-
-} = require("../db/dynamodb");
+const { putVideoMetadata, getVideoMetadata } = require("../db/dynamodb");
 
 // FFMPEG TEMP
 const DATA_DIR = path.join(__dirname, "..", "data");
@@ -84,7 +90,7 @@ function isAdminReq(req) {
     .includes("admin");
 }
 
-// UPLOAD 
+// UPLOAD
 router.post("/upload", async (req, res) => {
   try {
     const ctype = req.headers["content-type"] || "";
@@ -210,10 +216,9 @@ router.get("/uploads", async (req, res) => {
     const admin = isAdminReq(req);
     const me = ownerFromReq(req);
     const prefix = admin ? "uploads/" : `uploads/${me}/`;
-    const cacheKey = `uploads:${admin ? 'admin' : me}`;
+    const cacheKey = `uploads:${admin ? "admin" : me}`;
     let cached = await memcached.aGet(cacheKey);
     if (cached) {
-      // Return cached data
       return res.json({ items: JSON.parse(cached), cached: true });
     }
 
@@ -222,7 +227,7 @@ router.get("/uploads", async (req, res) => {
       .filter((o) => o.Key && !o.Key.endsWith("/"))
       .map((o) => {
         const parts = o.Key.split("/");
-        const name = parts.pop(); // filename.ext
+        const name = parts.pop();
         const owner = admin ? parts[1] || me : me;
         return {
           name,
@@ -253,12 +258,12 @@ router.get("/processed", async (req, res) => {
     const processedObjs = await listByPrefix(pfxProcessed);
 
     const uploadObjs = await listByPrefix(pfxUploads);
-    const baseMap = new Map(); 
+    const baseMap = new Map();
     for (const u of uploadObjs) {
       if (!u.Key || u.Key.endsWith("/")) continue;
       const upParts = u.Key.split("/");
       const uOwner = admin ? upParts[1] || me : me;
-      const uName = upParts.pop(); 
+      const uName = upParts.pop();
       const uBase = uName.replace(/\.[^.]+$/, "");
       baseMap.set(`${uOwner}:${uBase}`, uName);
     }
@@ -266,11 +271,11 @@ router.get("/processed", async (req, res) => {
     const items = processedObjs
       .filter((o) => o.Key && !o.Key.endsWith("/"))
       .map((o) => {
-        const parts = o.Key.split("/"); 
-        const name = parts.pop(); 
+        const parts = o.Key.split("/");
+        const name = parts.pop();
         const owner = admin ? parts[1] || me : me;
         const noExt = name.replace(/\.[^.]+$/, "");
-        const m = noExt.match(/^(.+?)_(.+)$/); 
+        const m = noExt.match(/^(.+?)_(.+)$/);
         const base = m ? m[1] : noExt;
         const variant = m ? m[2] : "";
         const original = baseMap.get(`${owner}:${base}`) || base;
@@ -295,7 +300,7 @@ router.get("/processed", async (req, res) => {
 router.get("/download/:type/:name", async (req, res) => {
   try {
     const me = ownerFromReq(req);
-    const type = req.params.type; // "uploads" | "processed"
+    const type = req.params.type;
     const name = req.params.name;
 
     const key = `${type}/${me}/${name}`;

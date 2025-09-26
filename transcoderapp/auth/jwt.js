@@ -1,4 +1,3 @@
-// auth/jwt.js
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const {
@@ -49,7 +48,6 @@ function signRefreshToken({ sub, username, ver }) {
   });
 }
 
-// Rotate-friendly verify: try all known secrets (first is current).
 function verifyToken(token) {
   let lastErr;
   for (const sec of allSecrets()) {
@@ -77,12 +75,10 @@ function authenticateAccess(req, res, next) {
   try {
     const payload = verifyToken(token);
     if (payload.typ !== "access") return res.sendStatus(401);
-    req.auth = payload; // full claims if you need them
+    req.auth = payload;
     req.user = toUser(payload);
-    // console.log(`authToken verified for user: ${req.user.username} at URL ${req.url}`);
     next();
   } catch (err) {
-    // console.log('JWT verification failed', err.name, err.message);
     res.setHeader("WWW-Authenticate", 'Bearer error="invalid_token"');
     return res.sendStatus(401);
   }
@@ -90,7 +86,6 @@ function authenticateAccess(req, res, next) {
 
 // ---- High-level helpers ----
 function issueTokensForUser(user) {
-  // user: { username, roles?, ver?, sub? }
   const accessToken = signAccessToken(user);
   const refreshToken = signRefreshToken(user);
   return {

@@ -1,4 +1,3 @@
-// bootstrap/secrets.js
 const {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -53,7 +52,6 @@ async function loadSecrets({
     );
   } catch (err) {
     console.warn("[secrets] load failed:", err.name || err.message);
-    // app will continue using .env values
   }
 }
 

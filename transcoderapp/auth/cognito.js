@@ -1,4 +1,3 @@
-// auth/cognito.js
 require("dotenv").config();
 const {
   CognitoIdentityProviderClient,
@@ -28,7 +27,6 @@ if (!clientSecret) {
 const issuer = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}`;
 const cip = new CognitoIdentityProviderClient({ region });
 
-// ESM-only 'jose' → lazy dynamic import (works in CommonJS)
 let verifierCache = null;
 async function getVerifier() {
   if (verifierCache) return verifierCache;
@@ -118,7 +116,7 @@ async function authenticateCognito(req, res, next) {
       audience: clientId,
     });
 
-    req.user = payload; // sub, email, "cognito:groups"
+    req.user = payload;
     next();
   } catch {
     return res.sendStatus(401);

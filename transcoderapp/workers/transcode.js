@@ -1,6 +1,3 @@
-// workers/transcode.js
-// TRANSCODE FILE
-
 const fs = require("fs");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
@@ -34,7 +31,7 @@ const QSCALE_MAP = { fast: 5, medium: 4, slow: 3 }; // AVI mpeg4
  * @param {'source'|string|number} [opts.fps='source'] e.g. '30'|'60'
  * @param {boolean} [opts.enhance=false] apply mild eq filter
  */
-// workers/transcode.js (only the changed bits shown)
+
 function transcodeVideo(
   inputPath,
   {
@@ -46,7 +43,6 @@ function transcodeVideo(
   } = {}
 ) {
   return new Promise((resolve, reject) => {
-    // sanitize
     preset = PRESET_MAP.has(String(preset)) ? String(preset) : "medium";
     scale = ["source", "1080p", "720p"].includes(String(scale))
       ? String(scale)
@@ -54,8 +50,6 @@ function transcodeVideo(
     fps = fps === "source" ? "source" : Number(fps) || "source";
 
     const base = path.parse(inputPath).name;
-
-    // Build a stable, readable variant tag
     const variant = [
       preset, // fast|medium|slow
       scale === "source" ? "src" : scale, // src|1080p|720p
@@ -76,9 +70,8 @@ function transcodeVideo(
       "-hide_banner",
       "-nostats",
       "-loglevel",
-      process.env.FFMPEG_LOGLEVEL || "error", // error|warning|info|debug
+      process.env.FFMPEG_LOGLEVEL || "error",
     ]);
-    // swallow ffmpeg stderr lines (prevents console flood)
     cmd.on("stderr", () => {});
 
     if (format === "mp4") {

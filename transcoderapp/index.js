@@ -1,4 +1,3 @@
-// index.js
 require("dotenv").config();
 
 const { loadSecrets } = require("./bootstrap/secrets");
@@ -27,22 +26,17 @@ const { loadSecrets } = require("./bootstrap/secrets");
 
   const app = express();
 
-  // When behind an ALB/Nginx, we want X-Forwarded-Proto/IP respected
   app.set("trust proxy", true);
 
   const PORT = Number(process.env.PORT || 3000);
-  const HOST = process.env.HOST || "0.0.0.0"; // bind all interfaces for EC2
-
-  // Prefer explicit PUBLIC_URL (e.g. https://api.example.com)
-  // Else compute from DOMAIN (e.g. http://api.example.com)
-  // Else show localhost:PORT just for convenience in logs
+  const HOST = process.env.HOST || "0.0.0.0";
   const PUBLIC_URL =
     process.env.PUBLIC_URL ||
     (process.env.DOMAIN
       ? `http://${process.env.DOMAIN}`
       : `http://localhost:${PORT}`);
 
-  // ---- Ensure local data dirs exist (temp only; videos live in S3) ----
+  // Ensure local data dirs exist
   const DATA_DIR = path.join(__dirname, "data");
   const TMP_DIR = path.join(DATA_DIR, "tmp");
   const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
@@ -51,10 +45,10 @@ const { loadSecrets } = require("./bootstrap/secrets");
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   fs.mkdirSync(PROCESSED_DIR, { recursive: true });
 
-  // ---- Static assets (homepage/CSS/JS) ----
+  // Static assets (homepage/CSS/JS)
   app.use(express.static(path.join(__dirname, "public")));
 
-  // ---- File uploads: BEFORE routes; temp files + sane limits ----
+  // File uploads: BEFORE routes; temp files + sane limits
   app.use(
     fileUpload({
       createParentPath: true,
@@ -66,10 +60,10 @@ const { loadSecrets } = require("./bootstrap/secrets");
     })
   );
 
-  // ---- Health ----
+  // Health
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
-  // ---- AUTH (Cognito) ----
+  // AUTH (Cognito)
   app.post("/auth/sign-up", express.json(), async (req, res) => {
     try {
       const { username, email, password } = req.body || {};
@@ -119,7 +113,6 @@ const { loadSecrets } = require("./bootstrap/secrets");
     }
   });
 
-  // Who am I (used by the UI for role badge)
   app.get("/auth/me", authenticateCognito, (req, res) => {
     const groups = req.user["cognito:groups"] || [];
     const groupsLower = groups.map((g) => String(g).toLowerCase());
@@ -135,22 +128,22 @@ const { loadSecrets } = require("./bootstrap/secrets");
     });
   });
 
-  // ---- Protected API (JSON parsers here won't affect multipart uploads) ----
+  // Protected API
   app.use(
     "/videos",
-    authenticateCognito, // ✅ Cognito-protected
+    authenticateCognito,
     express.json(),
     express.urlencoded({ extended: true }),
     videoRoutes
   );
 
-  // ---- SPA fallback for GETs only (Express 5 safe) ----
+  // SPA fallback for GETs only
   app.use((req, res, next) => {
     if (req.method !== "GET") return next();
     res.sendFile(path.join(__dirname, "public", "index.html"));
   });
 
-  // ---- Start server ----
+  // Start server
   const server = app.listen(PORT, HOST, () => {
     console.log("DATA dirs:", {
       data: DATA_DIR,
@@ -168,7 +161,6 @@ const { loadSecrets } = require("./bootstrap/secrets");
     process.exitCode = 1;
   });
 
-  // optional: graceful shutdown
   process.on("SIGTERM", () => server.close(() => process.exit(0)));
   process.on("SIGINT", () => server.close(() => process.exit(0)));
 })().catch((err) => {
