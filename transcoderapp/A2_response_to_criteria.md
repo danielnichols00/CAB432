@@ -1,4 +1,4 @@
-# Assignment 2 - Cloud Services Exercises - Response to Criteria
+Assignment 2 - Cloud Services Exercises - Response to Criteria
 
 ## Instructions
 
@@ -78,7 +78,7 @@
 
 ### Core - Authentication with Cognito
 
-- **User pool name:**
+- **User pool name:** n11070315-assignment2
 - **How are authentication tokens handled by the client?:** Login Request validates with Cognito database, sets JWT token.
 - **Video timestamp:** 04:45
 - **Relevant files:**
