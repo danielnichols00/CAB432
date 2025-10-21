@@ -1,19 +1,69 @@
-const Memcached = require("memcached");
-const memcached = new Memcached(
-  "n11713739-cache.km2jzi.0001.apse2.cache.amazonaws.com:11211"
-);
-memcached.aGet = (key) =>
-  new Promise((resolve, reject) => {
-    memcached.get(key, (err, data) => (err ? reject(err) : resolve(data)));
-  });
-memcached.aSet = (key, value, ttl) =>
-  new Promise((resolve, reject) => {
-    memcached.set(key, value, ttl, (err) => (err ? reject(err) : resolve()));
-  });
+// ---- Optional Memcached (disabled by default in local dev)
+const MEMCACHED_ENDPOINT = process.env.MEMCACHED_ENDPOINT; // e.g. 'n11713739-cache.km2jzi.0001.apse2.cache.amazonaws.com:11211'
+let cache = {
+  async get(_k) {
+    return null;
+  }, // no-op by default
+  async set(_k, _v, _ttl) {
+    /* no-op */
+  }, // no-op by default
+};
+
+if (MEMCACHED_ENDPOINT) {
+  try {
+    const Memcached = require("memcached");
+    const mc = new Memcached(MEMCACHED_ENDPOINT, {
+      timeout: 1000, // fail fast
+      retries: 0,
+      retriesDelay: 0,
+      failures: 0,
+    });
+    cache.get = (key) =>
+      new Promise((resolve) => {
+        mc.get(key, (err, data) => resolve(err ? null : data));
+      });
+    cache.set = (key, value, ttl) =>
+      new Promise((resolve) => {
+        mc.set(key, value, ttl, () => resolve()); // swallow errors
+      });
+    console.log("[cache] Memcached enabled:", MEMCACHED_ENDPOINT);
+  } catch (e) {
+    console.warn(
+      "[cache] Failed to init Memcached, using no-op cache:",
+      e?.message || e
+    );
+  }
+} else {
+  console.log("[cache] Memcached disabled (no MEMCACHED_ENDPOINT set)");
+}
 
 const fs = require("fs");
 const path = require("path");
-const { transcodeVideo } = require("../workers/transcode");
+
+// === AWS SDK (SQS + DynamoDB for job queue/status) ===
+const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
+const {
+  DynamoDBDocumentClient,
+  PutCommand,
+  GetCommand,
+} = require("@aws-sdk/lib-dynamodb");
+
+// Use Node's stdlib for IDs (avoids ESM nanoid issue)
+const { randomUUID } = require("crypto");
+
+// ENV for jobs
+const AWS_REGION = process.env.AWS_REGION || "ap-southeast-2";
+const QUEUE_URL = process.env.QUEUE_URL; // e.g. https://sqs.ap-southeast-2.amazonaws.com/<acct>/TranscoderJobs
+const JOBS_TABLE =
+  process.env.JOBS_TABLE || process.env.TABLE_NAME || "transcoder-jobs";
+
+const sqs = new SQSClient({ region: AWS_REGION });
+const ddb = DynamoDBDocumentClient.from(
+  new DynamoDBClient({ region: AWS_REGION })
+);
+
+// === S3 helpers (yours) ===
 const {
   putObject,
   getObject,
@@ -24,10 +74,35 @@ const {
   getPresignedUploadUrl,
 } = require("../db/s3");
 
-// PRE-SIGNED UPLOAD URL
+// === DynamoDB video-metadata helpers (yours) ===
+const { putVideoMetadata, getVideoMetadata } = require("../db/dynamodb");
+
+// === Express router ===
 const express = require("express");
 const router = express.Router();
-// RECORD UPLOAD METADATA (for direct S3 uploads)
+
+// -------------------------------
+// Utility: owner / admin helpers
+// -------------------------------
+function ownerFromReq(req) {
+  return (
+    req.user?.["cognito:username"] ||
+    req.user?.username ||
+    (req.user?.email ? req.user.email.split("@")[0] : null) ||
+    "unknown"
+  );
+}
+function isAdminReq(req) {
+  const groups = req.user?.["cognito:groups"] || [];
+  return groups
+    .map(String)
+    .map((s) => s.toLowerCase())
+    .includes("admin");
+}
+
+// ----------------------------------------
+// Upload metadata record (direct S3 flows)
+// ----------------------------------------
 router.post("/record-upload", async (req, res) => {
   try {
     const { safeName, owner } = req.body;
@@ -45,6 +120,10 @@ router.post("/record-upload", async (req, res) => {
       .json({ error: err.message || "Failed to record metadata" });
   }
 });
+
+// ----------------------------------------
+// Pre-signed upload URL (browser → S3)
+// ----------------------------------------
 router.post("/upload-url", async (req, res) => {
   try {
     const owner = ownerFromReq(req);
@@ -64,33 +143,10 @@ router.post("/upload-url", async (req, res) => {
     res.status(500).send("Failed to generate S3 upload URL");
   }
 });
-const { putVideoMetadata, getVideoMetadata } = require("../db/dynamodb");
 
-// FFMPEG TEMP
-const DATA_DIR = path.join(__dirname, "..", "data");
-const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
-const PROCESSED_DIR = path.join(DATA_DIR, "processed");
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-fs.mkdirSync(PROCESSED_DIR, { recursive: true });
-
-function ownerFromReq(req) {
-  return (
-    req.user?.["cognito:username"] ||
-    req.user?.username ||
-    (req.user?.email ? req.user.email.split("@")[0] : null) ||
-    "unknown"
-  );
-}
-
-function isAdminReq(req) {
-  const groups = req.user?.["cognito:groups"] || [];
-  return groups
-    .map(String)
-    .map((s) => s.toLowerCase())
-    .includes("admin");
-}
-
-// UPLOAD
+// ---------------------
+// Direct upload (API → S3)
+// ---------------------
 router.post("/upload", async (req, res) => {
   try {
     const ctype = req.headers["content-type"] || "";
@@ -135,92 +191,135 @@ router.post("/upload", async (req, res) => {
   }
 });
 
-// TRANSCODING
+// ================================================
+// TRANSCODING (A3): enqueue a job for the worker
+// ================================================
+async function createJob({ owner, inputKey, targetProfiles, more = {} }) {
+  const jobId = randomUUID(); // Unique, no extra deps
+  const item = {
+    jobId,
+    owner,
+    status: "QUEUED",
+    inputKey,
+    targetProfiles,
+    requestedAt: new Date().toISOString(),
+    outputs: [],
+    ...more,
+  };
+  await ddb.send(new PutCommand({ TableName: JOBS_TABLE, Item: item }));
+  return item;
+}
+async function enqueueJob(message) {
+  if (!QUEUE_URL) {
+    throw new Error("QUEUE_URL not configured on the API service");
+  }
+  await sqs.send(
+    new SendMessageCommand({
+      QueueUrl: QUEUE_URL,
+      MessageBody: JSON.stringify(message),
+    })
+  );
+}
+
+// NOTE: This replaces the old in-process FFmpeg path.
+// It now just records a job + pushes to SQS for the transcoderworker.
 router.post("/transcode", async (req, res) => {
-  let {
-    filename,
-    format = "mp4",
-    preset = "medium",
-    scale = "source",
-    fps = "source",
-    enhance = false,
-    heavy,
-  } = req.body || {};
-  if (!filename) return res.status(400).send("filename is required");
-
-  if (typeof heavy !== "undefined" && (heavy === true || heavy === "true")) {
-    preset = "slow";
-    scale = "1080p";
-    fps = "60";
-    enhance = true;
-  }
-
-  const owner = ownerFromReq(req);
-  const inKey = `uploads/${owner}/${filename}`;
-
-  // DOWNLOAD to LOCAL TEMP
-  let inputBuffer;
   try {
-    inputBuffer = await getObject(inKey, true);
-  } catch {
-    return res.status(404).send("Video not found in S3");
-  }
+    let {
+      filename,
+      format = "mp4",
+      preset = "medium",
+      scale = "source",
+      fps = "source",
+      enhance = false,
+      heavy,
+    } = req.body || {};
+    if (!filename) return res.status(400).send("filename is required");
 
-  const tempInputPath = path.join(UPLOADS_DIR, filename);
-  fs.writeFileSync(tempInputPath, inputBuffer);
+    // Optional: interpret "heavy" as a preset bundle
+    if (typeof heavy !== "undefined" && (heavy === true || heavy === "true")) {
+      preset = "slow";
+      scale = "1080p";
+      fps = "60";
+      enhance = true;
+    }
 
-  try {
-    const outputPath = await transcodeVideo(tempInputPath, {
+    const owner = ownerFromReq(req);
+    const inputKey = `uploads/${owner}/${filename}`;
+
+    // Choose output profiles the worker will map to scale options
+    const targetProfiles = ["720p", "source"]; // adjust as you like
+
+    // 1) Job record
+    const job = await createJob({
+      owner,
+      inputKey,
+      targetProfiles,
+      more: { format, preset, scale, fps, enhance },
+    });
+
+    // 2) Enqueue to SQS for the worker
+    await enqueueJob({
+      jobId: job.jobId,
+      owner,
+      inputKey,
+      targetProfiles,
+      requestedAt: job.requestedAt,
       format,
       preset,
       scale,
       fps,
       enhance,
     });
-    const outName = path.basename(outputPath);
-    const outKey = `processed/${owner}/${outName}`;
 
-    await putObject(outKey, fs.readFileSync(outputPath), "video/" + format, {
-      owner,
-    });
-
-    // DYNAMODB OWNER UPDATE
-    const meta = await getVideoMetadata(filename, owner);
-    const processed = Array.isArray(meta?.processed)
-      ? meta.processed.slice()
-      : [];
-    if (!processed.includes(outName)) processed.push(outName);
-    await putVideoMetadata(filename, processed, owner);
-
-    try {
-      fs.rmSync(tempInputPath, { force: true });
-    } catch {}
-    try {
-      fs.rmSync(outputPath, { force: true });
-    } catch {}
-
-    res.json({
-      message: "Video transcoded and uploaded to S3",
-      output: outName,
-      owner,
-    });
+    return res.status(202).json({ jobId: job.jobId, status: "QUEUED" });
   } catch (err) {
-    console.error("Transcode error:", err);
-    res.status(500).send(err.message || "Transcode failed");
+    console.error("Enqueue transcode error:", err);
+    return res
+      .status(500)
+      .send(err.message || "Failed to enqueue transcode job");
   }
 });
 
-// S3 UPLOADS LIST
+// --------------------------------------------
+// Job status (UI can poll while worker runs)
+// --------------------------------------------
+router.get("/jobs/:jobId", async (req, res) => {
+  try {
+    const me = ownerFromReq(req);
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: JOBS_TABLE,
+        Key: { jobId: req.params.jobId },
+      })
+    );
+    if (!Item) return res.status(404).json({ error: "Not found" });
+    if (Item.owner !== me && !isAdminReq(req))
+      return res.status(403).json({ error: "Forbidden" });
+    return res.json(Item);
+  } catch (err) {
+    console.error("Get job error:", err);
+    return res.status(500).json({ error: "Failed to get job" });
+  }
+});
+
+// -------------------------
+// List S3 uploads (cached)
+// -------------------------
 router.get("/uploads", async (req, res) => {
   try {
     const admin = isAdminReq(req);
     const me = ownerFromReq(req);
     const prefix = admin ? "uploads/" : `uploads/${me}/`;
     const cacheKey = `uploads:${admin ? "admin" : me}`;
-    let cached = await memcached.aGet(cacheKey);
-    if (cached) {
-      return res.json({ items: JSON.parse(cached), cached: true });
-    }
+
+    // try cache, never fail the request if cache is down
+    try {
+      const cached = await cache.get(cacheKey);
+      if (cached) {
+        return res.json({ items: JSON.parse(cached), cached: true });
+      }
+    } catch (_) {}
 
     const objs = await listByPrefix(prefix);
     const items = objs
@@ -237,8 +336,11 @@ router.get("/uploads", async (req, res) => {
         };
       });
 
-    // STORE IN CACHE FOR 30S
-    await memcached.aSet(cacheKey, JSON.stringify(items), 30);
+    // best-effort cache set
+    try {
+      await cache.set(cacheKey, JSON.stringify(items), 30);
+    } catch (_) {}
+
     res.json({ items, cached: false });
   } catch (err) {
     console.error("S3 uploads list error:", err);
@@ -246,7 +348,9 @@ router.get("/uploads", async (req, res) => {
   }
 });
 
-// PROCESSED LIST
+// ----------------------------
+// List S3 processed variants
+// ----------------------------
 router.get("/processed", async (req, res) => {
   try {
     const admin = isAdminReq(req);
@@ -257,6 +361,7 @@ router.get("/processed", async (req, res) => {
     // list processed
     const processedObjs = await listByPrefix(pfxProcessed);
 
+    // map originals by owner:baseName
     const uploadObjs = await listByPrefix(pfxUploads);
     const baseMap = new Map();
     for (const u of uploadObjs) {
@@ -296,11 +401,13 @@ router.get("/processed", async (req, res) => {
   }
 });
 
-// DOWNLOAD
+// ----------------------
+// Presigned download URL
+// ----------------------
 router.get("/download/:type/:name", async (req, res) => {
   try {
     const me = ownerFromReq(req);
-    const type = req.params.type;
+    const type = req.params.type; // 'uploads' or 'processed'
     const name = req.params.name;
 
     const key = `${type}/${me}/${name}`;
