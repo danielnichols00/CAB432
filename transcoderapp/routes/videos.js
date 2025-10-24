@@ -248,7 +248,7 @@ router.post("/transcode", async (req, res) => {
     const inputKey = `uploads/${owner}/${filename}`;
 
     // Choose output profiles the worker will map to scale options
-    const targetProfiles = ["720p", "source"]; // adjust as you like
+    const targetProfiles = ["source"]; // adjust as you like
 
     // 1) Job record
     const job = await createJob({

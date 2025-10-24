@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const adminRoutes = require("./routes/admin");
 const { loadSecrets } = require("./bootstrap/secrets");
 
 (async () => {
@@ -59,6 +60,8 @@ const { loadSecrets } = require("./bootstrap/secrets");
       debug: false,
     })
   );
+
+  app.use("/admin", adminRoutes);
 
   // Health
   app.get("/health", (_req, res) => res.json({ ok: true }));

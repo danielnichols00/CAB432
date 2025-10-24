@@ -183,6 +183,14 @@
           </div>
         </div>
 
+        
+        <!-- Processed-only controls -->
+        <div id="processedControls" class="">
+          <div class="actions">
+            <button class="btn hidden" id="refreshProcessedBtn">Refresh</button>
+          </div>
+        </div>
+
         <ul id="videoList" class="list"></ul>
         <div id="listError" class="error"></div>
       </div>
@@ -201,6 +209,31 @@
           <li><code>GET /videos/download/:type/:name</code> → <code>{ url }</code></li>
         </ul>
       </div>
+            <!-- Admin Job Dashboard -->
+      <div class="card hidden" id="adminCard">
+        <h2>Job Dashboard</h2>
+        <p class="muted tiny">View all transcode jobs, including failed and completed tasks.</p>
+        <div class="actions">
+          <button class="btn" id="refreshJobsBtn">Refresh Jobs</button>
+        </div>
+        <table id="jobTable" class="table">
+          <thead>
+            <tr>
+              <th>Job ID</th>
+              <th>Status</th>
+              <th>Owner</th>
+              <th>Started</th>
+              <th>Finished</th>
+              <th>Outputs</th>
+            </tr>
+          </thead>
+          <tbody><tr><td colspan="6" class="muted tiny">No jobs loaded yet.</td></tr></tbody>
+        </table>
+        <!-- below the job table -->
+        <div class="pagination" id="jobPagination"></div>
+
+      </div>
+
     </section>
   </main>
 
@@ -246,6 +279,8 @@
     const uploadForm   = document.getElementById('uploadForm');
     const uploadBtn    = document.getElementById('uploadBtn');
     const refreshBtn   = document.getElementById('refreshBtn');
+    const processedControls = document.getElementById('processedControls');
+    const refreshProcessedBtn = document.getElementById('refreshProcessedBtn');
     const uploadProgress = document.getElementById('uploadProgress');
     const uploadBar    = document.getElementById('uploadBar');
     const uploadText   = document.getElementById('uploadText');
@@ -275,7 +310,9 @@
     function enableAuthedUI(enabled){
       uploadBtn.disabled = !enabled;
       refreshBtn.disabled = !enabled;
+      if (refreshProcessedBtn) refreshProcessedBtn.disabled = !enabled;
     }
+
 
     async function loadIdentity(){
       try {
@@ -287,10 +324,12 @@
         sessionStorage.setItem('isAdmin', isAdmin ? '1' : '0');
         sessionStorage.setItem('groups', JSON.stringify(groups));
         roleBadge.classList.toggle('hidden', !isAdmin);
+        checkAdminUI(); // 👈 added to recheck dashboard visibility after identity loads
       } catch {
         roleBadge.classList.add('hidden');
       }
     }
+
 
     function updateNav(){
       const loggedIn = !!sessionStorage.getItem('authToken');
@@ -324,19 +363,28 @@
       }
     }
 
-    function setTab(tab){
-      currentTab = tab;
-      if (tab === 'uploads'){
-        tabUploads.classList.add('active');
-        tabProcessed.classList.remove('active');
-        transcodeControls.classList.remove('hidden');
-      } else {
-        tabProcessed.classList.add('active');
-        tabUploads.classList.remove('active');
-        transcodeControls.classList.add('hidden');
-      }
-      loadList();
+  function setTab(tab){
+    currentTab = tab;
+    if (tab === 'uploads'){
+      tabUploads.classList.add('active');
+      tabProcessed.classList.remove('active');
+      transcodeControls.classList.remove('hidden');
+      refreshBtn.classList.remove('hidden');
+
+      processedControls.classList.add('hidden');
+      refreshProcessedBtn.classList.add('hidden');
+    } else {
+      tabProcessed.classList.add('active');
+      tabUploads.classList.remove('active');
+      transcodeControls.classList.add('hidden');
+      refreshBtn.classList.add('hidden');
+
+      processedControls.classList.remove('hidden');
+      refreshProcessedBtn.classList.remove('hidden');
     }
+    loadList();
+  }
+
 
     // Restore on refresh
     (function restore(){
@@ -632,6 +680,147 @@ function renderProcessed(items){
     });
 
     document.getElementById('refreshBtn').addEventListener('click', loadList);
+    refreshProcessedBtn.addEventListener('click', loadList);
+
+    // --- Admin Job Dashboard ---
+    const adminCard = document.getElementById('adminCard');
+    const refreshJobsBtn = document.getElementById('refreshJobsBtn');
+    const jobTableBody = document.querySelector('#jobTable tbody');
+    let currentPage = 1;
+    const jobsPerPage = 8;
+    let allJobs = [];
+    let jobsLoadedOnce = false; // to avoid auto-loading repeatedly
+
+
+    async function loadJobs(){
+      try {
+        const res = await fetch('/admin/jobs', {
+          headers: { Authorization: 'Bearer ' + sessionStorage.getItem('authToken') }
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+        allJobs = Array.isArray(data.items) ? data.items : [];
+        // keep current page if already loaded; otherwise go to 1
+        if (!jobsLoadedOnce) currentPage = 1;
+        jobsLoadedOnce = true;
+
+        renderJobPage();
+      } catch (err) {
+        jobTableBody.innerHTML = `<tr><td colspan="6" class="error tiny">
+          Error loading jobs: ${err.message || err}
+        </td></tr>`;
+        document.getElementById('jobPagination').innerHTML = '';
+      }
+    }
+
+    function renderJobPage() {
+      const start = (currentPage - 1) * jobsPerPage;
+      const end = start + jobsPerPage;
+      const items = allJobs.slice(start, end);
+
+      jobTableBody.innerHTML = items.length
+        ? items.map(j => `
+          <tr>
+            <td><code>${j.jobId}</code></td>
+            <td>
+              ${
+                j.status === 'FAILED'
+                  ? `<span class="error">${j.status}</span>
+                    <button class="btn tiny retry-btn" data-jobid="${j.jobId}">Retry</button>`
+                  : j.status === 'RETRIED'
+                  ? `<span class="muted">${j.status}</span>`
+                  : j.status === 'COMPLETED'
+                  ? `<span class="success">${j.status}</span>`
+                  : (j.status || '-')
+              }
+            </td>
+            <td>${j.owner || '-'}</td>
+            <td>${j.startedAt ? new Date(j.startedAt).toLocaleString() : '-'}</td>
+            <td>${j.finishedAt ? new Date(j.finishedAt).toLocaleString() : '-'}</td>
+            <td>${Array.isArray(j.outputs) ? j.outputs.map(o => o.name).join('<br>') : '-'}</td>
+          </tr>
+        `).join('')
+        : '<tr><td colspan="6" class="muted tiny">No jobs found.</td></tr>';
+
+      renderPagination();
+    }
+
+    function renderPagination() {
+      const totalPages = Math.ceil(allJobs.length / jobsPerPage) || 1;
+      const wrap = document.getElementById('jobPagination');
+
+      if (totalPages <= 1) {
+        wrap.innerHTML = '';
+        return;
+      }
+
+      wrap.innerHTML = `
+        <div class="pager">
+          <button class="btn tiny" ${currentPage === 1 ? 'disabled' : ''} id="prevPage">← Prev</button>
+          <span class="muted tiny">Page ${currentPage} of ${totalPages}</span>
+          <button class="btn tiny" ${currentPage === totalPages ? 'disabled' : ''} id="nextPage">Next →</button>
+        </div>
+      `;
+
+      document.getElementById('prevPage').onclick = () => {
+        if (currentPage > 1) { currentPage--; renderJobPage(); }
+      };
+      document.getElementById('nextPage').onclick = () => {
+        if (currentPage < totalPages) { currentPage++; renderJobPage(); }
+      };
+    }
+
+
+
+    refreshJobsBtn.addEventListener('click', loadJobs);
+      // Retry job button click
+      jobTableBody.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.retry-btn');
+        if (!btn) return;
+        const jobId = btn.dataset.jobid;
+        if (!confirm(`Retry failed job ${jobId}?`)) return;
+        btn.disabled = true;
+        btn.textContent = 'Retrying…';
+        try {
+          const res = await fetch('/admin/retry-job', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + sessionStorage.getItem('authToken'),
+            },
+            body: JSON.stringify({ jobId }), // ✅ send jobId properly
+          });
+
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Retry failed');
+        alert(`✅ Job retried as ${data.newJobId}`);
+        loadJobs();
+      } catch (err) {
+        alert('❌ ' + err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Retry';
+      }
+    });
+
+
+    // Auto-show for Admin users
+      function checkAdminUI(){
+        const isAdmin = sessionStorage.getItem('isAdmin') === '1';
+        adminCard.classList.toggle('hidden', !isAdmin);
+        if (isAdmin && !jobsLoadedOnce) {
+          loadJobs();
+        }
+      }
+
+
+    // Recheck whenever identity is loaded
+    document.addEventListener('DOMContentLoaded', checkAdminUI);
+    window.addEventListener('storage', checkAdminUI);
+
+
   </script>
 </body>
 </html>
