@@ -1,46 +1,10 @@
-// ---- Optional Memcached (disabled by default in local dev)
-const MEMCACHED_ENDPOINT = process.env.MEMCACHED_ENDPOINT; // e.g. 'n11713739-cache.km2jzi.0001.apse2.cache.amazonaws.com:11211'
-let cache = {
-  async get(_k) {
-    return null;
-  }, // no-op by default
-  async set(_k, _v, _ttl) {
-    /* no-op */
-  }, // no-op by default
-};
-
-if (MEMCACHED_ENDPOINT) {
-  try {
-    const Memcached = require("memcached");
-    const mc = new Memcached(MEMCACHED_ENDPOINT, {
-      timeout: 1000, // fail fast
-      retries: 0,
-      retriesDelay: 0,
-      failures: 0,
-    });
-    cache.get = (key) =>
-      new Promise((resolve) => {
-        mc.get(key, (err, data) => resolve(err ? null : data));
-      });
-    cache.set = (key, value, ttl) =>
-      new Promise((resolve) => {
-        mc.set(key, value, ttl, () => resolve()); // swallow errors
-      });
-    console.log("[cache] Memcached enabled:", MEMCACHED_ENDPOINT);
-  } catch (e) {
-    console.warn(
-      "[cache] Failed to init Memcached, using no-op cache:",
-      e?.message || e
-    );
-  }
-} else {
-  console.log("[cache] Memcached disabled (no MEMCACHED_ENDPOINT set)");
-}
-
+// transcoderapp/routes/videos.js
+const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const { randomUUID } = require("crypto");
 
-// === AWS SDK (SQS + DynamoDB for job queue/status) ===
+// === AWS SDK ===
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
@@ -49,41 +13,53 @@ const {
   GetCommand,
 } = require("@aws-sdk/lib-dynamodb");
 
-// Use Node's stdlib for IDs (avoids ESM nanoid issue)
-const { randomUUID } = require("crypto");
-
-// ENV for jobs
-const AWS_REGION = process.env.AWS_REGION || "ap-southeast-2";
-const QUEUE_URL = process.env.QUEUE_URL; // e.g. https://sqs.ap-southeast-2.amazonaws.com/<acct>/TranscoderJobs
-const JOBS_TABLE =
-  process.env.JOBS_TABLE || process.env.TABLE_NAME || "transcoder-jobs";
-
-const sqs = new SQSClient({ region: AWS_REGION });
-const ddb = DynamoDBDocumentClient.from(
-  new DynamoDBClient({ region: AWS_REGION })
-);
-
-// === S3 helpers (yours) ===
+// === S3 + DynamoDB helpers ===
 const {
   putObject,
-  getObject,
-  getPresignedUrl,
-  listByPrefix,
-  s3Client,
-  bucketName,
   getPresignedUploadUrl,
+  listByPrefix,
+  getPresignedUrl,
 } = require("../db/s3");
+const { putVideoMetadata } = require("../db/dynamodb");
 
-// === DynamoDB video-metadata helpers (yours) ===
-const { putVideoMetadata, getVideoMetadata } = require("../db/dynamodb");
+// === Optional Memcached ===
+const MEMCACHED_ENDPOINT = process.env.MEMCACHED_ENDPOINT;
+let cache = {
+  async get() {
+    return null;
+  },
+  async set() {},
+};
 
-// === Express router ===
-const express = require("express");
+if (MEMCACHED_ENDPOINT) {
+  try {
+    const Memcached = require("memcached");
+    const mc = new Memcached(MEMCACHED_ENDPOINT, {
+      timeout: 1000,
+      retries: 0,
+      failures: 0,
+    });
+    cache.get = (key) =>
+      new Promise((resolve) => {
+        mc.get(key, (err, data) => resolve(err ? null : data));
+      });
+    cache.set = (key, value, ttl) =>
+      new Promise((resolve) => {
+        mc.set(key, value, ttl, () => resolve());
+      });
+    console.log("[cache] Memcached enabled:", MEMCACHED_ENDPOINT);
+  } catch (e) {
+    console.warn("[cache] Failed to init Memcached:", e?.message || e);
+  }
+} else {
+  console.log("[cache] Memcached disabled (no MEMCACHED_ENDPOINT set)");
+}
+
 const router = express.Router();
 
-// -------------------------------
-// Utility: owner / admin helpers
-// -------------------------------
+// -----------------------------
+// Helpers
+// -----------------------------
 function ownerFromReq(req) {
   return (
     req.user?.["cognito:username"] ||
@@ -94,14 +70,26 @@ function ownerFromReq(req) {
 }
 function isAdminReq(req) {
   const groups = req.user?.["cognito:groups"] || [];
-  return groups
-    .map(String)
-    .map((s) => s.toLowerCase())
-    .includes("admin");
+  return groups.map((g) => String(g).toLowerCase()).includes("admin");
+}
+
+// 🧠 Dynamic env + clients (fresh each request)
+function getAws() {
+  const REGION = process.env.AWS_REGION || "ap-southeast-2";
+  const QUEUE_URL = process.env.QUEUE_URL;
+  const JOBS_TABLE =
+    process.env.JOBS_TABLE || process.env.TABLE_NAME || "transcoder-jobs";
+
+  const sqs = new SQSClient({ region: REGION });
+  const ddb = DynamoDBDocumentClient.from(
+    new DynamoDBClient({ region: REGION })
+  );
+
+  return { REGION, QUEUE_URL, JOBS_TABLE, sqs, ddb };
 }
 
 // ----------------------------------------
-// Upload metadata record (direct S3 flows)
+// Record upload metadata
 // ----------------------------------------
 router.post("/record-upload", async (req, res) => {
   try {
@@ -110,25 +98,24 @@ router.post("/record-upload", async (req, res) => {
       return res.status(400).json({ error: "Missing safeName or owner" });
     }
     await putVideoMetadata(safeName, [], owner);
-    return res
+    res
       .status(201)
       .json({ message: "Metadata recorded", filename: safeName, owner });
   } catch (err) {
-    console.error("Record upload error:", err);
-    return res
-      .status(500)
-      .json({ error: err.message || "Failed to record metadata" });
+    console.error("[record-upload] error:", err);
+    res.status(500).json({ error: err.message || "Failed to record metadata" });
   }
 });
 
 // ----------------------------------------
-// Pre-signed upload URL (browser → S3)
+// Presigned S3 upload URL
 // ----------------------------------------
 router.post("/upload-url", async (req, res) => {
   try {
     const owner = ownerFromReq(req);
     const { filename, contentType } = req.body || {};
     if (!filename) return res.status(400).send("filename is required");
+
     const safeName = `${Date.now()}_${filename.replace(/[^\w.\-]+/g, "_")}`;
     const key = `uploads/${owner}/${safeName}`;
     const url = await getPresignedUploadUrl(
@@ -139,31 +126,23 @@ router.post("/upload-url", async (req, res) => {
     if (!url) return res.status(500).send("Failed to generate upload URL");
     res.json({ url, key, safeName });
   } catch (err) {
-    console.error("Presigned upload URL error:", err);
+    console.error("[upload-url] error:", err);
     res.status(500).send("Failed to generate S3 upload URL");
   }
 });
 
-// ---------------------
-// Direct upload (API → S3)
-// ---------------------
+// ----------------------------------------
+// Direct upload (multipart/form-data)
+// ----------------------------------------
 router.post("/upload", async (req, res) => {
   try {
     const ctype = req.headers["content-type"] || "";
     if (!ctype.startsWith("multipart/form-data")) {
-      return res
-        .status(415)
-        .send(
-          `Wrong Content-Type. Expected multipart/form-data, got: ${ctype}`
-        );
+      return res.status(415).send("Expected multipart/form-data");
     }
-    if (!req.files)
-      return res
-        .status(400)
-        .send("No files found on request. Did you send FormData?");
+    if (!req.files) return res.status(400).send("No files found");
     const video = req.files.video || req.files.file;
-    if (!video)
-      return res.status(400).send('Expected field "video" (or "file")');
+    if (!video) return res.status(400).send('Expected field "video"');
 
     const originalName = path.basename(video.name || "upload");
     const safeName = `${Date.now()}_${originalName.replace(/[^\w.\-]+/g, "_")}`;
@@ -177,25 +156,27 @@ router.post("/upload", async (req, res) => {
     await putObject(key, body, video.mimetype, { owner });
     await putVideoMetadata(safeName, [], owner);
 
-    return res
+    res
       .status(201)
-      .json({ message: "Video uploaded to S3", filename: safeName, owner });
+      .json({ message: "Uploaded to S3", filename: safeName, owner });
   } catch (err) {
-    if (String(err?.message || "").includes("File size limit"))
-      return res.status(413).send("File too large");
-    if (req.aborted) return res.status(499).send("Client aborted upload");
-    console.error("Upload error:", err);
-    return res
-      .status(500)
-      .send("Upload failed: " + (err.message || "unknown error"));
+    console.error("[upload] error:", err);
+    res.status(500).send(err.message || "Upload failed");
   }
 });
 
 // ================================================
-// TRANSCODING (A3): enqueue a job for the worker
+// Transcoding: enqueue a job for the worker
 // ================================================
-async function createJob({ owner, inputKey, targetProfiles, more = {} }) {
-  const jobId = randomUUID(); // Unique, no extra deps
+async function createJob({
+  ddb,
+  JOBS_TABLE,
+  owner,
+  inputKey,
+  targetProfiles,
+  more,
+}) {
+  const jobId = randomUUID();
   const item = {
     jobId,
     owner,
@@ -209,10 +190,8 @@ async function createJob({ owner, inputKey, targetProfiles, more = {} }) {
   await ddb.send(new PutCommand({ TableName: JOBS_TABLE, Item: item }));
   return item;
 }
-async function enqueueJob(message) {
-  if (!QUEUE_URL) {
-    throw new Error("QUEUE_URL not configured on the API service");
-  }
+async function enqueueJob({ sqs, QUEUE_URL, message }) {
+  if (!QUEUE_URL) throw new Error("QUEUE_URL not configured");
   await sqs.send(
     new SendMessageCommand({
       QueueUrl: QUEUE_URL,
@@ -221,9 +200,8 @@ async function enqueueJob(message) {
   );
 }
 
-// NOTE: This replaces the old in-process FFmpeg path.
-// It now just records a job + pushes to SQS for the transcoderworker.
 router.post("/transcode", async (req, res) => {
+  const { sqs, ddb, JOBS_TABLE, QUEUE_URL } = getAws();
   try {
     let {
       filename,
@@ -234,10 +212,11 @@ router.post("/transcode", async (req, res) => {
       enhance = false,
       heavy,
     } = req.body || {};
+
     if (!filename) return res.status(400).send("filename is required");
 
-    // Optional: interpret "heavy" as a preset bundle
-    if (typeof heavy !== "undefined" && (heavy === true || heavy === "true")) {
+    // interpret heavy preset
+    if (String(heavy) === "true" || heavy === true) {
       preset = "slow";
       scale = "1080p";
       fps = "60";
@@ -246,45 +225,35 @@ router.post("/transcode", async (req, res) => {
 
     const owner = ownerFromReq(req);
     const inputKey = `uploads/${owner}/${filename}`;
+    const targetProfiles = ["source"];
 
-    // Choose output profiles the worker will map to scale options
-    const targetProfiles = ["source"]; // adjust as you like
-
-    // 1) Job record
     const job = await createJob({
+      ddb,
+      JOBS_TABLE,
       owner,
       inputKey,
       targetProfiles,
       more: { format, preset, scale, fps, enhance },
     });
 
-    // 2) Enqueue to SQS for the worker
     await enqueueJob({
-      jobId: job.jobId,
-      owner,
-      inputKey,
-      targetProfiles,
-      requestedAt: job.requestedAt,
-      format,
-      preset,
-      scale,
-      fps,
-      enhance,
+      sqs,
+      QUEUE_URL,
+      message: { ...job },
     });
 
-    return res.status(202).json({ jobId: job.jobId, status: "QUEUED" });
+    res.status(202).json({ jobId: job.jobId, status: "QUEUED" });
   } catch (err) {
-    console.error("Enqueue transcode error:", err);
-    return res
-      .status(500)
-      .send(err.message || "Failed to enqueue transcode job");
+    console.error("[transcode] error:", err);
+    res.status(500).send(err.message || "Failed to enqueue transcode job");
   }
 });
 
 // --------------------------------------------
-// Job status (UI can poll while worker runs)
+// Job status
 // --------------------------------------------
 router.get("/jobs/:jobId", async (req, res) => {
+  const { ddb, JOBS_TABLE } = getAws();
   try {
     const me = ownerFromReq(req);
     const { Item } = await ddb.send(
@@ -296,10 +265,10 @@ router.get("/jobs/:jobId", async (req, res) => {
     if (!Item) return res.status(404).json({ error: "Not found" });
     if (Item.owner !== me && !isAdminReq(req))
       return res.status(403).json({ error: "Forbidden" });
-    return res.json(Item);
+    res.json(Item);
   } catch (err) {
-    console.error("Get job error:", err);
-    return res.status(500).json({ error: "Failed to get job" });
+    console.error("[job-status] error:", err);
+    res.status(500).json({ error: "Failed to get job" });
   }
 });
 
@@ -313,13 +282,8 @@ router.get("/uploads", async (req, res) => {
     const prefix = admin ? "uploads/" : `uploads/${me}/`;
     const cacheKey = `uploads:${admin ? "admin" : me}`;
 
-    // try cache, never fail the request if cache is down
-    try {
-      const cached = await cache.get(cacheKey);
-      if (cached) {
-        return res.json({ items: JSON.parse(cached), cached: true });
-      }
-    } catch (_) {}
+    const cached = await cache.get(cacheKey).catch(() => null);
+    if (cached) return res.json({ items: JSON.parse(cached), cached: true });
 
     const objs = await listByPrefix(prefix);
     const items = objs
@@ -336,20 +300,16 @@ router.get("/uploads", async (req, res) => {
         };
       });
 
-    // best-effort cache set
-    try {
-      await cache.set(cacheKey, JSON.stringify(items), 30);
-    } catch (_) {}
-
+    await cache.set(cacheKey, JSON.stringify(items), 30).catch(() => {});
     res.json({ items, cached: false });
   } catch (err) {
-    console.error("S3 uploads list error:", err);
+    console.error("[uploads-list] error:", err);
     res.status(500).send("Failed to list uploads");
   }
 });
 
 // ----------------------------
-// List S3 processed variants
+// List processed variants
 // ----------------------------
 router.get("/processed", async (req, res) => {
   try {
@@ -358,17 +318,15 @@ router.get("/processed", async (req, res) => {
     const pfxProcessed = admin ? "processed/" : `processed/${me}/`;
     const pfxUploads = admin ? "uploads/" : `uploads/${me}/`;
 
-    // list processed
     const processedObjs = await listByPrefix(pfxProcessed);
-
-    // map originals by owner:baseName
     const uploadObjs = await listByPrefix(pfxUploads);
+
     const baseMap = new Map();
     for (const u of uploadObjs) {
       if (!u.Key || u.Key.endsWith("/")) continue;
-      const upParts = u.Key.split("/");
-      const uOwner = admin ? upParts[1] || me : me;
-      const uName = upParts.pop();
+      const parts = u.Key.split("/");
+      const uOwner = admin ? parts[1] || me : me;
+      const uName = parts.pop();
       const uBase = uName.replace(/\.[^.]+$/, "");
       baseMap.set(`${uOwner}:${uBase}`, uName);
     }
@@ -389,14 +347,14 @@ router.get("/processed", async (req, res) => {
           owner,
           original,
           variant,
-          lastModified: o.LastModified || null,
+          lastModified: o.LastModified,
           size: o.Size ?? null,
         };
       });
 
     res.json({ items });
   } catch (err) {
-    console.error("S3 processed list error:", err);
+    console.error("[processed-list] error:", err);
     res.status(500).send("Failed to list processed");
   }
 });
@@ -407,16 +365,14 @@ router.get("/processed", async (req, res) => {
 router.get("/download/:type/:name", async (req, res) => {
   try {
     const me = ownerFromReq(req);
-    const type = req.params.type; // 'uploads' or 'processed'
-    const name = req.params.name;
-
+    const { type, name } = req.params;
     const key = `${type}/${me}/${name}`;
     const url = await getPresignedUrl(key);
     if (!url) return res.sendStatus(404);
     res.json({ url });
   } catch (err) {
-    console.error("Presign error:", err);
-    res.status(500).send("Failed to generate S3 download URL");
+    console.error("[download-url] error:", err);
+    res.status(500).send("Failed to generate download URL");
   }
 });
 

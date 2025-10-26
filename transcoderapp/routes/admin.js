@@ -11,28 +11,35 @@ const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
 
 const router = express.Router();
 
-const REGION = process.env.AWS_REGION || "ap-southeast-2";
-const JOBS_TABLE = process.env.JOBS_TABLE || "n11070315-transcode-jobs";
-const QUEUE_URL = process.env.QUEUE_URL; // required for /retry-job
+/**
+ * Helper to read AWS env vars dynamically at runtime
+ * (important when using AWS Secrets Manager)
+ */
+function getEnv() {
+  return {
+    AWS_REGION: process.env.AWS_REGION || "ap-southeast-2",
+    JOBS_TABLE: process.env.JOBS_TABLE || "n11070315-transcode-jobs",
+    QUEUE_URL: process.env.QUEUE_URL || "",
+  };
+}
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
-const sqs = new SQSClient({ region: REGION });
-
-/** Decode JWT payload without verification (for UI-only gating). */
+/**
+ * Decode JWT payload (without signature verification)
+ * Used for simple admin UI gating.
+ */
 function decodeJwtPayloadUnsafe(authHeader) {
   if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
   const token = authHeader.slice("Bearer ".length).trim();
   const parts = token.split(".");
   if (parts.length < 2) return null;
   try {
-    const json = Buffer.from(parts[1], "base64").toString("utf8");
-    return JSON.parse(json);
+    return JSON.parse(Buffer.from(parts[1], "base64").toString("utf8"));
   } catch {
     return null;
   }
 }
 
-/** Normalize groups from multiple possible claims. */
+/** Normalize possible group claims */
 function extractGroups(user) {
   if (!user) return [];
   const g1 = user["cognito:groups"];
@@ -55,22 +62,13 @@ function isAdminReq(req) {
 
 /**
  * Admin gate for all /admin routes:
- * - If req.user is missing, try to backfill from Authorization header (same token your frontend stores).
- * - Then enforce admin group membership.
+ * If req.user is missing, decode token manually.
  */
 router.use((req, res, next) => {
-  // Backfill req.user if middleware didn't populate it
   if (!req.user) {
     const decoded = decodeJwtPayloadUnsafe(req.headers.authorization);
     if (decoded) req.user = decoded;
   }
-
-  // Optional: log once per request to debug what the router sees
-  // console.log("[/admin] req.user snapshot:", {
-  //   sub: req.user?.sub,
-  //   username: req.user?.["cognito:username"] || req.user?.username,
-  //   groups: req.user ? extractGroups(req.user) : []
-  // });
 
   if (!isAdminReq(req)) {
     return res.status(403).json({ error: "Admin only" });
@@ -78,8 +76,15 @@ router.use((req, res, next) => {
   next();
 });
 
-// GET /admin/jobs — list all jobs (optionally filter by status)
+// ==================================================
+// GET /admin/jobs — list all jobs
+// ==================================================
 router.get("/jobs", async (req, res) => {
+  const { AWS_REGION, JOBS_TABLE } = getEnv();
+  const ddb = DynamoDBDocumentClient.from(
+    new DynamoDBClient({ region: AWS_REGION })
+  );
+
   try {
     const statusFilter = (req.query.status || "").toUpperCase().trim();
     const data = await ddb.send(new ScanCommand({ TableName: JOBS_TABLE }));
@@ -106,16 +111,25 @@ router.get("/jobs", async (req, res) => {
   }
 });
 
-// POST /admin/retry-job — resend FAILED job to SQS and mark original as RETRIED
+// ==================================================
+// POST /admin/retry-job — requeue failed job
+// ==================================================
 router.post("/retry-job", async (req, res) => {
+  const { AWS_REGION, JOBS_TABLE, QUEUE_URL } = getEnv();
+  const ddb = DynamoDBDocumentClient.from(
+    new DynamoDBClient({ region: AWS_REGION })
+  );
+  const sqs = new SQSClient({ region: AWS_REGION });
+
   try {
     if (!QUEUE_URL) {
       return res.status(500).json({ error: "QUEUE_URL env not configured" });
     }
+
     const { jobId } = req.body || {};
     if (!jobId) return res.status(400).json({ error: "Missing jobId" });
 
-    // Load the original job
+    // Load existing job
     const { Item: job } = await ddb.send(
       new GetCommand({ TableName: JOBS_TABLE, Key: { jobId } })
     );
@@ -124,10 +138,8 @@ router.post("/retry-job", async (req, res) => {
       return res.status(400).json({ error: "Only FAILED jobs can be retried" });
     }
 
-    // New job id (traceable to original)
     const newJobId = `retry-${Date.now()}-${String(jobId).slice(0, 8)}`;
 
-    // Enqueue the same work again
     const payload = {
       jobId: newJobId,
       owner: job.owner,
@@ -151,7 +163,7 @@ router.post("/retry-job", async (req, res) => {
       })
     );
 
-    // Mark old job as RETRIED + link to follow-up job
+    // Mark old job as RETRIED
     await ddb.send(
       new UpdateCommand({
         TableName: JOBS_TABLE,
