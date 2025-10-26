@@ -1,8 +1,9 @@
+// transcoderworker/src/transcode.js
 const fs = require("fs");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
 
-// Use bundled binaries so it works on Windows/EC2/etc.
+// Use bundled binaries so it works on Windows/EC2/etc (install these in the WORKER package.json)
 const ffmpegPath = require("ffmpeg-static");
 const ffprobePath = require("ffprobe-static").path;
 ffmpeg.setFfmpegPath(ffmpegPath);
@@ -21,6 +22,22 @@ const CRF_MAP = {
 };
 const QSCALE_MAP = { fast: 5, medium: 4, slow: 3 }; // AVI mpeg4
 
+// Env knobs
+const THREADS = String(process.env.FFMPEG_THREADS || "0"); // 0 = auto
+const AUDIO_BITRATE = String(process.env.AUDIO_BITRATE || "128k");
+
+/**
+ * Build AR-safe scale+pad filters for a 16:9 target.
+ * Keeps original AR (no stretching), letterboxes as needed.
+ */
+function scalePadFilter(targetW, targetH) {
+  // Use exact integers; assumes targetW:targetH = 16:9 (e.g., 1920x1080, 1280x720)
+  return [
+    `scale=w=${targetW}:h=${targetH}:force_original_aspect_ratio=decrease`,
+    `pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2`,
+  ].join(","); // single filter chain
+}
+
 /**
  * Transcode.
  * @param {string} inputPath
@@ -31,7 +48,6 @@ const QSCALE_MAP = { fast: 5, medium: 4, slow: 3 }; // AVI mpeg4
  * @param {'source'|string|number} [opts.fps='source'] e.g. '30'|'60'
  * @param {boolean} [opts.enhance=false] apply mild eq filter
  */
-
 function transcodeVideo(
   inputPath,
   {
@@ -51,15 +67,15 @@ function transcodeVideo(
 
     const base = path.parse(inputPath).name;
     const variant = [
-      preset, // fast|medium|slow
-      scale === "source" ? "src" : scale, // src|1080p|720p
-      fps === "source" ? "src" : `${fps}fps`, // src|30fps|60fps
-      enhance ? "enh" : null, // enh (only if true)
+      preset,
+      scale === "source" ? "src" : scale,
+      fps === "source" ? "src" : `${fps}fps`,
+      enhance ? "enh" : null,
     ]
       .filter(Boolean)
       .join("_");
 
-    const outName = `${base}_${variant}.${format}`; // e.g. clip_medium_1080p_60fps_enh.mp4
+    const outName = `${base}_${variant}.${format}`;
     const outputPath = path.join(PROCESSED_DIR, outName);
 
     const cmd = ffmpeg(inputPath);
@@ -74,38 +90,88 @@ function transcodeVideo(
     ]);
     cmd.on("stderr", () => {});
 
+    // Common output opts
+    const commonOut = ["-threads", THREADS];
+
+    // Video & audio codec + quality
     if (format === "mp4") {
       cmd
         .videoCodec("libx264")
         .audioCodec("aac")
         .outputOptions([
+          ...commonOut,
           "-preset",
-          preset, // fast|medium|slow
+          preset,
           "-crf",
           String(CRF_MAP.mp4[preset]),
           "-movflags",
           "+faststart",
+          "-pix_fmt",
+          "yuv420p",
+          "-b:a",
+          AUDIO_BITRATE,
         ]);
     } else if (format === "webm") {
       cmd
         .videoCodec("libvpx-vp9")
         .audioCodec("libopus")
-        .outputOptions(["-b:v", "0", "-crf", String(CRF_MAP.webm[preset])]);
+        .outputOptions([
+          ...commonOut,
+          "-b:v",
+          "0",
+          "-crf",
+          String(CRF_MAP.webm[preset]),
+          "-row-mt",
+          "1", // row-based multi-threading
+          "-tile-columns",
+          "1", // modest tiling for parallelism
+          "-frame-parallel",
+          "1",
+          "-pix_fmt",
+          "yuv420p",
+          "-b:a",
+          AUDIO_BITRATE,
+        ]);
     } else if (format === "avi") {
       cmd
         .videoCodec("mpeg4")
         .audioCodec("mp3")
-        .outputOptions(["-qscale:v", String(QSCALE_MAP[preset])]);
+        .outputOptions([
+          ...commonOut,
+          "-qscale:v",
+          String(QSCALE_MAP[preset]),
+          "-pix_fmt",
+          "yuv420p",
+          "-b:a",
+          AUDIO_BITRATE,
+        ]);
     } else {
       return reject(new Error(`Unsupported format: ${format}`));
     }
 
-    if (scale === "1080p") cmd.size("1920x1080");
-    if (scale === "720p") cmd.size("1280x720");
+    // Scaling (AR-safe)
+    if (scale === "1080p") {
+      cmd.videoFilters(scalePadFilter(1920, 1080));
+    } else if (scale === "720p") {
+      cmd.videoFilters(scalePadFilter(1280, 720));
+    }
+
+    // FPS override
     if (fps !== "source") cmd.fps(fps);
 
+    // Mild enhancement
     if (enhance) {
-      cmd.videoFilters("eq=brightness=0.02:contrast=1.08:gamma=1.04");
+      // Chain with existing filters if present
+      const enh = "eq=brightness=0.02:contrast=1.08:gamma=1.04";
+      // If filters already exist, append; else set
+      const existing = cmd._currentOutput.videoFilters || [];
+      if (existing.length > 0) {
+        cmd.videoFilters(
+          [...existing.map((f) => f.filter || f), enh].join(",")
+        );
+      } else {
+        cmd.videoFilters(enh);
+      }
     }
 
     cmd

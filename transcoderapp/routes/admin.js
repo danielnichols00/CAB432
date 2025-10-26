@@ -121,74 +121,103 @@ router.post("/retry-job", async (req, res) => {
   );
   const sqs = new SQSClient({ region: AWS_REGION });
 
+  // Normalize jobId from body, query, or params; accept jobId/jobID/id casing
+  const body = req.body || {};
+  const jobId =
+    body.jobId ||
+    body.jobID ||
+    body.id ||
+    req.query.jobId ||
+    req.query.jobID ||
+    req.query.id ||
+    req.params.jobId ||
+    req.params.jobID ||
+    req.params.id;
+
+  if (!QUEUE_URL) {
+    return res.status(500).json({ error: "QUEUE_URL env not configured" });
+  }
+  if (!jobId) {
+    console.warn("[admin/retry-job] missing jobId. Received:", {
+      headers: req.headers["content-type"],
+      bodyKeys: Object.keys(body || {}),
+      query: req.query,
+      params: req.params,
+    });
+    return res.status(400).json({ error: "Missing jobId" });
+  }
+
   try {
-    if (!QUEUE_URL) {
-      return res.status(500).json({ error: "QUEUE_URL env not configured" });
-    }
-
-    const { jobId } = req.body || {};
-    if (!jobId) return res.status(400).json({ error: "Missing jobId" });
-
-    // Load existing job
+    // Load parent job
     const { Item: job } = await ddb.send(
       new GetCommand({ TableName: JOBS_TABLE, Key: { jobId } })
     );
     if (!job) return res.status(404).json({ error: "Job not found" });
-    if (String(job.status).toUpperCase() !== "FAILED") {
-      return res.status(400).json({ error: "Only FAILED jobs can be retried" });
-    }
 
-    const newJobId = `retry-${Date.now()}-${String(jobId).slice(0, 8)}`;
-
-    const payload = {
-      jobId: newJobId,
-      owner: job.owner,
-      inputKey: job.inputKey,
-      format: job.format || "mp4",
-      preset: job.preset || "medium",
-      scale: job.scale || "source",
-      fps: job.fps || "source",
-      enhance: !!job.enhance,
-      targetProfiles: Array.isArray(job.targetProfiles)
+    // pick profiles
+    const profiles =
+      Array.isArray(job.requestedProfiles) && job.requestedProfiles.length
+        ? job.requestedProfiles
+        : Array.isArray(job.targetProfiles) && job.targetProfiles.length
         ? job.targetProfiles
-        : ["source"],
-      requestedAt: new Date().toISOString(),
-      retriedFrom: jobId,
-    };
+        : ["source"];
 
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: QUEUE_URL,
-        MessageBody: JSON.stringify(payload),
-      })
-    );
-
-    // Mark old job as RETRIED
+    // reset counters & mark QUEUED
     await ddb.send(
       new UpdateCommand({
         TableName: JOBS_TABLE,
         Key: { jobId },
         UpdateExpression:
-          "SET #s = :s, #r = if_not_exists(#r, :zero) + :one, #n = :n, #t = :t, #f = :f",
-        ExpressionAttributeNames: {
-          "#s": "status",
-          "#r": "retryCount",
-          "#n": "note",
-          "#t": "retriedAt",
-          "#f": "followupJobId",
-        },
+          "SET #s = :queued, completedVariants = :z, outputs = :empty, " +
+          "retryCount = if_not_exists(retryCount, :z) + :one, retriedAt = :t, note = :note",
+        ExpressionAttributeNames: { "#s": "status" },
         ExpressionAttributeValues: {
-          ":s": "RETRIED",
-          ":zero": 0,
+          ":queued": "QUEUED",
+          ":z": 0,
           ":one": 1,
-          ":n": `Retried as ${newJobId}`,
+          ":empty": [],
           ":t": new Date().toISOString(),
-          ":f": newJobId,
+          ":note": `Admin retried ${profiles.length} variant(s)`,
         },
       })
     );
 
-    res.json({ ok: true, newJobId });
+    // enqueue one message per variant
+    const isFifo = String(QUEUE_URL).endsWith(".fifo");
+    const sendVariant = async (variant) => {
+      const payload = {
+        jobId: job.jobId,
+        owner: job.owner,
+        inputKey: job.inputKey,
+        targetProfiles: [variant],
+        format: job.format || "mp4",
+        preset: job.preset || "medium",
+        scale: job.scale || "source",
+        fps: job.fps || "source",
+        enhance: !!job.enhance,
+        variant,
+        parentMode: "split-variants",
+        requestedAt: new Date().toISOString(),
+        retriedFrom: jobId,
+      };
+
+      const params = {
+        QueueUrl: QUEUE_URL,
+        MessageBody: JSON.stringify(payload),
+      };
+
+      if (isFifo) {
+        // per-variant group to avoid head-of-line blocking
+        params.MessageGroupId = `${job.jobId}-${variant}`;
+        params.MessageDeduplicationId = `${job.jobId}-${variant}-${Date.now()}`;
+      }
+
+      await sqs.send(new SendMessageCommand(params));
+    };
+
+    await Promise.all(profiles.map(sendVariant));
+
+    res.json({ ok: true, jobId, newJobId: jobId, variantsEnqueued: profiles });
   } catch (err) {
     console.error("[admin/retry-job] error:", err);
     res.status(500).json({ error: err.message || "Retry failed" });

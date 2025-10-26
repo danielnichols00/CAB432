@@ -22,6 +22,8 @@ const {
 } = require("../db/s3");
 const { putVideoMetadata } = require("../db/dynamodb");
 
+const router = express.Router();
+
 // === Optional Memcached ===
 const MEMCACHED_ENDPOINT = process.env.MEMCACHED_ENDPOINT;
 let cache = {
@@ -54,8 +56,6 @@ if (MEMCACHED_ENDPOINT) {
 } else {
   console.log("[cache] Memcached disabled (no MEMCACHED_ENDPOINT set)");
 }
-
-const router = express.Router();
 
 // -----------------------------
 // Helpers
@@ -166,40 +166,110 @@ router.post("/upload", async (req, res) => {
 });
 
 // ================================================
-// Transcoding: enqueue a job for the worker
+// Transcoding: create parent job & enqueue variants
 // ================================================
+
+// Valid profiles we accept from clients
+const VALID_PROFILES = new Set(["source", "1080p", "720p"]);
+
+// Create a parent job record (one row) that tracks all variants
 async function createJob({
   ddb,
   JOBS_TABLE,
   owner,
   inputKey,
-  targetProfiles,
-  more,
+  targetProfiles, // e.g. ["source","1080p","720p"]
+  more, // { format, preset, scale, fps, enhance }
 }) {
   const jobId = randomUUID();
+  const requestedAt = new Date().toISOString();
+
   const item = {
     jobId,
     owner,
     status: "QUEUED",
     inputKey,
-    targetProfiles,
-    requestedAt: new Date().toISOString(),
+    // store the full set of requested profiles
+    requestedProfiles: targetProfiles,
+    // bookkeeping for UI/status
+    totalVariants: targetProfiles.length,
+    completedVariants: 0,
     outputs: [],
-    ...more,
+    requestedAt,
+    mode: "split-variants",
+    ...more, // format/preset/scale/fps/enhance
   };
+
   await ddb.send(new PutCommand({ TableName: JOBS_TABLE, Item: item }));
   return item;
 }
-async function enqueueJob({ sqs, QUEUE_URL, message }) {
+
+// Low-level enqueue helper; adds FIFO fields if needed
+async function enqueueJob({ sqs, QUEUE_URL, message, delaySeconds = 0 }) {
   if (!QUEUE_URL) throw new Error("QUEUE_URL not configured");
-  await sqs.send(
-    new SendMessageCommand({
-      QueueUrl: QUEUE_URL,
-      MessageBody: JSON.stringify(message),
-    })
+
+  const isFifo = QUEUE_URL.endsWith(".fifo");
+  const body = JSON.stringify(message);
+  const cmdInput = {
+    QueueUrl: QUEUE_URL,
+    MessageBody: body,
+  };
+
+  if (delaySeconds > 0) {
+    cmdInput.DelaySeconds = Math.min(Math.max(delaySeconds, 0), 900);
+  }
+
+  if (isFifo) {
+    // group by owner so a single user's variants keep relative ordering,
+    // but different users can process in parallel.
+    cmdInput.MessageGroupId = message.owner || "default";
+    cmdInput.MessageDeduplicationId = `${message.jobId}-${
+      message.variant || "single"
+    }-${randomUUID()}`;
+  }
+
+  await sqs.send(new SendMessageCommand(cmdInput));
+}
+
+// Enqueue one SQS message per variant (preferred for horizontal scaling)
+async function enqueueVariantJobs({
+  sqs,
+  QUEUE_URL,
+  baseJob, // returned from createJob()
+  targetProfiles,
+}) {
+  await Promise.all(
+    targetProfiles.map((profile) =>
+      enqueueJob({
+        sqs,
+        QUEUE_URL,
+        message: {
+          // Parent job info:
+          jobId: baseJob.jobId,
+          owner: baseJob.owner,
+          inputKey: baseJob.inputKey,
+
+          // Worker payload (isolate to a single variant):
+          targetProfiles: [profile],
+          format: baseJob.format,
+          preset: baseJob.preset,
+          scale: baseJob.scale,
+          fps: baseJob.fps,
+          enhance: baseJob.enhance,
+
+          // Optional metadata for logging/metrics:
+          variant: profile,
+          parentMode: "split-variants",
+          requestedAt: baseJob.requestedAt,
+        },
+      })
+    )
   );
 }
 
+// ----------------------------------------
+// POST /transcode  → create job & enqueue
+// ----------------------------------------
 router.post("/transcode", async (req, res) => {
   const { sqs, ddb, JOBS_TABLE, QUEUE_URL } = getAws();
   try {
@@ -211,6 +281,7 @@ router.post("/transcode", async (req, res) => {
       fps = "source",
       enhance = false,
       heavy,
+      targetProfiles, // optional array from client
     } = req.body || {};
 
     if (!filename) return res.status(400).send("filename is required");
@@ -223,26 +294,39 @@ router.post("/transcode", async (req, res) => {
       enhance = true;
     }
 
+    // Validate/normalise targetProfiles; default to ["source"]
+    let profiles = Array.isArray(targetProfiles)
+      ? targetProfiles.filter((p) => VALID_PROFILES.has(String(p)))
+      : ["source"];
+
+    if (profiles.length === 0) profiles = ["source"];
+
     const owner = ownerFromReq(req);
     const inputKey = `uploads/${owner}/${filename}`;
-    const targetProfiles = ["source"];
 
-    const job = await createJob({
+    // Create a single parent job row
+    const baseJob = await createJob({
       ddb,
       JOBS_TABLE,
       owner,
       inputKey,
-      targetProfiles,
+      targetProfiles: profiles,
       more: { format, preset, scale, fps, enhance },
     });
 
-    await enqueueJob({
+    // Enqueue one SQS message per variant so workers/instances can parallelise
+    await enqueueVariantJobs({
       sqs,
       QUEUE_URL,
-      message: { ...job },
+      baseJob,
+      targetProfiles: profiles,
     });
 
-    res.status(202).json({ jobId: job.jobId, status: "QUEUED" });
+    res.status(202).json({
+      jobId: baseJob.jobId,
+      status: "QUEUED",
+      variants: profiles,
+    });
   } catch (err) {
     console.error("[transcode] error:", err);
     res.status(500).send(err.message || "Failed to enqueue transcode job");

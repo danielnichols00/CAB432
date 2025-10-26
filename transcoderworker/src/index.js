@@ -8,6 +8,7 @@ const {
   SQSClient,
   ReceiveMessageCommand,
   DeleteMessageCommand,
+  ChangeMessageVisibilityCommand,
 } = require("@aws-sdk/client-sqs");
 const {
   S3Client,
@@ -22,7 +23,7 @@ const {
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 
-const { transcodeVideo } = require("../../transcoderapp/workers/transcode");
+const { transcodeVideo } = require("./transcode");
 
 // --- Env ---
 const REGION = process.env.AWS_REGION || "ap-southeast-2";
@@ -32,6 +33,12 @@ const JOBS_TABLE =
   process.env.JOBS_TABLE || process.env.TABLE_NAME || "transcoder-jobs";
 const WAIT_TIME = Number(process.env.SQS_WAIT_SECONDS || 20);
 const VISIBILITY = Number(process.env.SQS_VISIBILITY || 300);
+const WORKER_CONCURRENCY = Number(process.env.WORKER_CONCURRENCY || 2);
+const BATCH_SIZE = Math.min(Number(process.env.SQS_MAX_MESSAGES || 10), 10);
+const PARALLEL_VARIANTS =
+  String(process.env.WORKER_PARALLEL_VARIANTS || "false").toLowerCase() ===
+  "true";
+const HEARTBEAT_SECONDS = Number(process.env.WORKER_HEARTBEAT_SECONDS || 60);
 
 if (!QUEUE_URL || !BUCKET) {
   console.error("Missing required env: QUEUE_URL and S3_BUCKET_NAME");
@@ -127,13 +134,44 @@ async function failJob(jobId, message) {
   }
 }
 
+function startHeartbeat(receiptHandle) {
+  if (!HEARTBEAT_SECONDS || HEARTBEAT_SECONDS <= 0) return null;
+  let cancelled = false;
+
+  const tick = async () => {
+    if (cancelled) return;
+    try {
+      await sqs.send(
+        new ChangeMessageVisibilityCommand({
+          QueueUrl: QUEUE_URL,
+          ReceiptHandle: receiptHandle,
+          VisibilityTimeout: VISIBILITY,
+        })
+      );
+      // console.log("[worker] visibility extended");
+    } catch (e) {
+      console.warn("[worker] heartbeat failed:", e?.message || e);
+    }
+    if (!cancelled) {
+      timer = setTimeout(tick, HEARTBEAT_SECONDS * 1000);
+    }
+  };
+
+  let timer = setTimeout(tick, HEARTBEAT_SECONDS * 1000);
+
+  return () => {
+    cancelled = true;
+    clearTimeout(timer);
+  };
+}
+
 async function processMessage(msg) {
   const body = JSON.parse(msg.Body);
   const {
     jobId,
     owner,
     inputKey,
-    targetProfiles = ["source", scale], // single variant by default
+    targetProfiles = ["source"],
     format = "mp4",
     preset = "medium",
     scale = "source",
@@ -152,10 +190,6 @@ async function processMessage(msg) {
 
   // Confirm the object exists before trying to fetch
   try {
-    console.log("[worker] Checking S3 key exists", {
-      bucket: BUCKET,
-      key: inputKey,
-    });
     await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: inputKey }));
   } catch {
     console.error("[worker] S3 key missing:", {
@@ -166,11 +200,11 @@ async function processMessage(msg) {
     return;
   }
 
-  // Get original base name for clean filenames
-  const originalName = path.basename(inputKey); // e.g. '1761267002318_Clip_of_World.mp4'
-  const baseName = path.parse(originalName).name; // no extension
-
-  const localIn = `/tmp/${baseName}.mp4`;
+  // Use the original extension to keep things sane for non-mp4 inputs
+  const originalName = path.basename(inputKey);
+  const baseName = path.parse(originalName).name;
+  const ext = path.extname(originalName) || ".bin";
+  const localIn = `/tmp/${baseName}${ext}`;
 
   try {
     await downloadToTmp(BUCKET, inputKey, localIn);
@@ -180,48 +214,59 @@ async function processMessage(msg) {
     return;
   }
 
+  const stopHeartbeat = startHeartbeat(msg.ReceiptHandle);
   const outputs = [];
 
-  for (const profile of targetProfiles) {
-    try {
-      const opts = mapProfileToOptions(profile, {
-        format,
-        preset,
-        scale,
-        fps,
-        enhance,
-      });
+  const doOneVariant = async (profile) => {
+    const opts = mapProfileToOptions(profile, {
+      format,
+      preset,
+      scale,
+      fps,
+      enhance,
+    });
 
-      const outPath = await transcodeVideo(localIn, opts);
-      const variant = [
-        preset,
-        opts.scale,
-        fps === "source" ? "src" : `${fps}fps`,
-        enhance ? "enh" : null,
-      ]
-        .filter(Boolean)
-        .join("_");
-      const outName = `${baseName}_${variant}.${opts.format}`;
-      const outKey = `processed/${owner}/${outName}`;
+    const outPath = await transcodeVideo(localIn, opts);
+    const variant = [
+      preset,
+      opts.scale,
+      fps === "source" ? "src" : `${fps}fps`,
+      enhance ? "enh" : null,
+    ]
+      .filter(Boolean)
+      .join("_");
+    const outName = `${baseName}_${variant}.${opts.format}`;
+    const outKey = `processed/${owner}/${outName}`;
 
-      await uploadFromPath(
-        BUCKET,
-        outKey,
-        outPath,
-        `video/${opts.format || "mp4"}`,
-        { jobid: jobId, original: inputKey }
-      );
+    await uploadFromPath(
+      BUCKET,
+      outKey,
+      outPath,
+      `video/${opts.format || "mp4"}`,
+      { jobid: jobId, original: inputKey }
+    );
 
-      outputs.push({ profile, key: outKey, name: outName });
+    outputs.push({ profile, key: outKey, name: outName });
+    fs.rmSync(outPath, { force: true });
+  };
 
-      fs.rmSync(outPath, { force: true });
-    } catch (err) {
-      console.error("[worker] transcode/upload failed:", err?.message || err);
-      await failJob(jobId, "TRANSCODE_FAILED");
-      return;
+  try {
+    if (PARALLEL_VARIANTS && targetProfiles.length > 1) {
+      await Promise.all(targetProfiles.map((p) => doOneVariant(p)));
+    } else {
+      for (const p of targetProfiles) {
+        await doOneVariant(p);
+      }
     }
+  } catch (err) {
+    console.error("[worker] transcode/upload failed:", err?.message || err);
+    await failJob(jobId, "TRANSCODE_FAILED");
+    stopHeartbeat && stopHeartbeat();
+    fs.rmSync(localIn, { force: true });
+    return;
   }
 
+  stopHeartbeat && stopHeartbeat();
   fs.rmSync(localIn, { force: true });
 
   await markJob(jobId, {
@@ -231,35 +276,77 @@ async function processMessage(msg) {
   });
 }
 
-async function loop() {
-  console.log("[transcoderworker] polling:", QUEUE_URL);
-  while (true) {
-    const { Messages } = await sqs.send(
-      new ReceiveMessageCommand({
-        QueueUrl: QUEUE_URL,
-        MaxNumberOfMessages: 1,
-        WaitTimeSeconds: WAIT_TIME,
-        VisibilityTimeout: VISIBILITY,
-      })
-    );
-    if (!Messages || Messages.length === 0) continue;
-
-    for (const m of Messages) {
+// Simple in-process semaphore for per-instance concurrency
+let active = 0;
+const queue = [];
+function runWithLimit(fn) {
+  return new Promise((resolve, reject) => {
+    const task = async () => {
+      active++;
       try {
-        await processMessage(m);
-        await sqs.send(
-          new DeleteMessageCommand({
-            QueueUrl: QUEUE_URL,
-            ReceiptHandle: m.ReceiptHandle,
-          })
-        );
-      } catch (err) {
-        console.error("[transcoderworker] job failed:", err?.message || err);
-        try {
-          const body = JSON.parse(m.Body || "{}");
-          if (body.jobId) await failJob(body.jobId, err?.message || err);
-        } catch {}
+        const result = await fn();
+        resolve(result);
+      } catch (e) {
+        reject(e);
+      } finally {
+        active--;
+        if (queue.length) queue.shift()();
       }
+    };
+    if (active < WORKER_CONCURRENCY) task();
+    else queue.push(task);
+  });
+}
+
+async function consumeBatch() {
+  const { Messages } = await sqs.send(
+    new ReceiveMessageCommand({
+      QueueUrl: QUEUE_URL,
+      MaxNumberOfMessages: BATCH_SIZE, // up to 10
+      WaitTimeSeconds: WAIT_TIME,
+      VisibilityTimeout: VISIBILITY,
+    })
+  );
+  if (!Messages || Messages.length === 0) return;
+
+  await Promise.all(
+    Messages.map((m) =>
+      runWithLimit(async () => {
+        try {
+          await processMessage(m);
+          await sqs.send(
+            new DeleteMessageCommand({
+              QueueUrl: QUEUE_URL,
+              ReceiptHandle: m.ReceiptHandle,
+            })
+          );
+        } catch (err) {
+          console.error("[transcoderworker] job failed:", err?.message || err);
+          try {
+            const body = JSON.parse(m.Body || "{}");
+            if (body.jobId) await failJob(body.jobId, err?.message || err);
+          } catch {}
+          // Do not delete the message -> let it become visible after timeout
+        }
+      })
+    )
+  );
+}
+
+async function loop() {
+  console.log("[transcoderworker] polling:", QUEUE_URL, {
+    concurrency: WORKER_CONCURRENCY,
+    batch: BATCH_SIZE,
+    visibility: VISIBILITY,
+    heartbeat: HEARTBEAT_SECONDS,
+    parallelVariants: PARALLEL_VARIANTS,
+  });
+  while (true) {
+    try {
+      await consumeBatch();
+    } catch (e) {
+      console.error("[transcoderworker] poll error:", e?.message || e);
+      await new Promise((r) => setTimeout(r, 2000)); // brief backoff
     }
   }
 }

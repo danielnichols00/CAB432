@@ -68,7 +68,7 @@ const { loadSecrets } = require("./bootstrap/secrets");
   );
 
   // Routes
-  app.use("/admin", adminRoutes);
+  app.use("/admin", express.json(), adminRoutes);
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
   // AUTH (Cognito)
