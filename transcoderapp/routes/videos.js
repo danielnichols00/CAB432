@@ -1,10 +1,9 @@
-// transcoderapp/routes/videos.js
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const { randomUUID } = require("crypto");
 
-// === AWS SDK ===
+// AWS SDK
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
@@ -13,7 +12,7 @@ const {
   GetCommand,
 } = require("@aws-sdk/lib-dynamodb");
 
-// === S3 + DynamoDB helpers ===
+// S3 + DynamoDB helpers
 const {
   putObject,
   getPresignedUploadUrl,
@@ -24,7 +23,7 @@ const { putVideoMetadata } = require("../db/dynamodb");
 
 const router = express.Router();
 
-// === Optional Memcached ===
+// Optional Memcached
 const MEMCACHED_ENDPOINT = process.env.MEMCACHED_ENDPOINT;
 let cache = {
   async get() {
@@ -57,9 +56,7 @@ if (MEMCACHED_ENDPOINT) {
   console.log("[cache] Memcached disabled (no MEMCACHED_ENDPOINT set)");
 }
 
-// -----------------------------
 // Helpers
-// -----------------------------
 function ownerFromReq(req) {
   return (
     req.user?.["cognito:username"] ||
@@ -88,9 +85,7 @@ function getAws() {
   return { REGION, QUEUE_URL, JOBS_TABLE, sqs, ddb };
 }
 
-// ----------------------------------------
 // Record upload metadata
-// ----------------------------------------
 router.post("/record-upload", async (req, res) => {
   try {
     const { safeName, owner } = req.body;
@@ -107,9 +102,7 @@ router.post("/record-upload", async (req, res) => {
   }
 });
 
-// ----------------------------------------
 // Presigned S3 upload URL
-// ----------------------------------------
 router.post("/upload-url", async (req, res) => {
   try {
     const owner = ownerFromReq(req);
@@ -131,9 +124,7 @@ router.post("/upload-url", async (req, res) => {
   }
 });
 
-// ----------------------------------------
 // Direct upload (multipart/form-data)
-// ----------------------------------------
 router.post("/upload", async (req, res) => {
   try {
     const ctype = req.headers["content-type"] || "";
@@ -165,11 +156,8 @@ router.post("/upload", async (req, res) => {
   }
 });
 
-// ================================================
 // Transcoding: create parent job & enqueue variants
-// ================================================
-
-// Valid profiles we accept from clients
+// Valid profiles we accept from client
 const VALID_PROFILES = new Set(["source", "1080p", "720p"]);
 
 // Create a parent job record (one row) that tracks all variants
@@ -178,8 +166,8 @@ async function createJob({
   JOBS_TABLE,
   owner,
   inputKey,
-  targetProfiles, // e.g. ["source","1080p","720p"]
-  more, // { format, preset, scale, fps, enhance }
+  targetProfiles,
+  more,
 }) {
   const jobId = randomUUID();
   const requestedAt = new Date().toISOString();
@@ -204,7 +192,7 @@ async function createJob({
   return item;
 }
 
-// Low-level enqueue helper; adds FIFO fields if needed
+// Low-level enqueue helper;
 async function enqueueJob({ sqs, QUEUE_URL, message, delaySeconds = 0 }) {
   if (!QUEUE_URL) throw new Error("QUEUE_URL not configured");
 
@@ -220,8 +208,6 @@ async function enqueueJob({ sqs, QUEUE_URL, message, delaySeconds = 0 }) {
   }
 
   if (isFifo) {
-    // group by owner so a single user's variants keep relative ordering,
-    // but different users can process in parallel.
     cmdInput.MessageGroupId = message.owner || "default";
     cmdInput.MessageDeduplicationId = `${message.jobId}-${
       message.variant || "single"
@@ -249,7 +235,7 @@ async function enqueueVariantJobs({
           owner: baseJob.owner,
           inputKey: baseJob.inputKey,
 
-          // Worker payload (isolate to a single variant):
+          // Worker payload:
           targetProfiles: [profile],
           format: baseJob.format,
           preset: baseJob.preset,
@@ -267,9 +253,7 @@ async function enqueueVariantJobs({
   );
 }
 
-// ----------------------------------------
 // POST /transcode  → create job & enqueue
-// ----------------------------------------
 router.post("/transcode", async (req, res) => {
   const { sqs, ddb, JOBS_TABLE, QUEUE_URL } = getAws();
   try {
@@ -333,9 +317,7 @@ router.post("/transcode", async (req, res) => {
   }
 });
 
-// --------------------------------------------
 // Job status
-// --------------------------------------------
 router.get("/jobs/:jobId", async (req, res) => {
   const { ddb, JOBS_TABLE } = getAws();
   try {
@@ -356,9 +338,7 @@ router.get("/jobs/:jobId", async (req, res) => {
   }
 });
 
-// -------------------------
 // List S3 uploads (cached)
-// -------------------------
 router.get("/uploads", async (req, res) => {
   try {
     const admin = isAdminReq(req);
@@ -392,9 +372,7 @@ router.get("/uploads", async (req, res) => {
   }
 });
 
-// ----------------------------
 // List processed variants
-// ----------------------------
 router.get("/processed", async (req, res) => {
   try {
     const admin = isAdminReq(req);
@@ -443,9 +421,7 @@ router.get("/processed", async (req, res) => {
   }
 });
 
-// ----------------------
 // Presigned download URL
-// ----------------------
 router.get("/download/:type/:name", async (req, res) => {
   try {
     const me = ownerFromReq(req);

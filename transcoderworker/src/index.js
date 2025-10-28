@@ -1,4 +1,3 @@
-// transcoderworker/src/index.js
 require("dotenv").config();
 
 const fs = require("fs");
@@ -25,7 +24,6 @@ const {
 
 const { transcodeVideo } = require("./transcode");
 
-// --- Env ---
 const REGION = process.env.AWS_REGION || "ap-southeast-2";
 const QUEUE_URL = process.env.QUEUE_URL;
 const BUCKET = process.env.S3_BUCKET_NAME;
@@ -45,7 +43,7 @@ if (!QUEUE_URL || !BUCKET) {
   process.exit(1);
 }
 
-// --- AWS clients ---
+// AWS clients
 const s3 = new S3Client({
   region: REGION,
   requestHandler: new NodeHttpHandler({
@@ -56,7 +54,7 @@ const s3 = new S3Client({
 const sqs = new SQSClient({ region: REGION });
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
 
-// --- helpers ---
+// helpers
 async function downloadToTmp(bucket, key, outPath) {
   console.log("[worker] fetching from S3:", { bucket, key, outPath });
   const resp = await s3.send(

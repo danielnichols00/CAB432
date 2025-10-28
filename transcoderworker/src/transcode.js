@@ -1,9 +1,8 @@
-// transcoderworker/src/transcode.js
 const fs = require("fs");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
 
-// Use bundled binaries so it works on Windows/EC2/etc (install these in the WORKER package.json)
+// Use bundled binaries so it works on Windows/EC2/etc
 const ffmpegPath = require("ffmpeg-static");
 const ffprobePath = require("ffprobe-static").path;
 ffmpeg.setFfmpegPath(ffmpegPath);
@@ -15,7 +14,7 @@ const PROCESSED_DIR = path.join(DATA_DIR, "processed");
 fs.mkdirSync(PROCESSED_DIR, { recursive: true });
 
 // Maps for quality knobs
-const PRESET_MAP = new Set(["fast", "medium", "slow"]); // default: medium
+const PRESET_MAP = new Set(["fast", "medium", "slow"]);
 const CRF_MAP = {
   mp4: { fast: 24, medium: 23, slow: 21 },
   webm: { fast: 34, medium: 32, slow: 28 },
@@ -23,7 +22,7 @@ const CRF_MAP = {
 const QSCALE_MAP = { fast: 5, medium: 4, slow: 3 }; // AVI mpeg4
 
 // Env knobs
-const THREADS = String(process.env.FFMPEG_THREADS || "0"); // 0 = auto
+const THREADS = String(process.env.FFMPEG_THREADS || "0");
 const AUDIO_BITRATE = String(process.env.AUDIO_BITRATE || "128k");
 
 /**
@@ -31,7 +30,7 @@ const AUDIO_BITRATE = String(process.env.AUDIO_BITRATE || "128k");
  * Keeps original AR (no stretching), letterboxes as needed.
  */
 function scalePadFilter(targetW, targetH) {
-  // Use exact integers; assumes targetW:targetH = 16:9 (e.g., 1920x1080, 1280x720)
+  // Use exact integers; assumes targetW:targetH = 16:9
   return [
     `scale=w=${targetW}:h=${targetH}:force_original_aspect_ratio=decrease`,
     `pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2`,
@@ -161,7 +160,6 @@ function transcodeVideo(
 
     // Mild enhancement
     if (enhance) {
-      // Chain with existing filters if present
       const enh = "eq=brightness=0.02:contrast=1.08:gamma=1.04";
       // If filters already exist, append; else set
       const existing = cmd._currentOutput.videoFilters || [];

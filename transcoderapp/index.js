@@ -3,7 +3,7 @@ require("dotenv").config();
 const { loadSecrets } = require("./bootstrap/secrets");
 
 (async () => {
-  // 1️⃣ Load AWS Secrets Manager values into process.env FIRST
+  // Load AWS Secrets Manager values into process.env
   await loadSecrets({
     id: process.env.SECRET_ID || "n11070315-assignment2-transcoder",
   });
@@ -13,8 +13,6 @@ const { loadSecrets } = require("./bootstrap/secrets");
     QUEUE_URL: process.env.QUEUE_URL?.slice(0, 50) + "...",
     AWS_REGION: process.env.AWS_REGION,
   });
-
-  // 2️⃣ Now require everything that depends on env vars
   const express = require("express");
   const fileUpload = require("express-fileupload");
   const path = require("path");
@@ -28,7 +26,7 @@ const { loadSecrets } = require("./bootstrap/secrets");
     authenticateCognito,
   } = require("./auth/cognito");
 
-  // ✅ Routes are imported *after* secrets are loaded
+  // Routes are imported and secrets are loaded
   const adminRoutes = require("./routes/admin");
   const videoRoutes = require("./routes/videos");
 

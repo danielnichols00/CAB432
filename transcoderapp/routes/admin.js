@@ -1,4 +1,3 @@
-// transcoderapp/routes/admin.js
 const express = require("express");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
@@ -39,7 +38,6 @@ function decodeJwtPayloadUnsafe(authHeader) {
   }
 }
 
-/** Normalize possible group claims */
 function extractGroups(user) {
   if (!user) return [];
   const g1 = user["cognito:groups"];
@@ -76,9 +74,6 @@ router.use((req, res, next) => {
   next();
 });
 
-// ==================================================
-// GET /admin/jobs — list all jobs
-// ==================================================
 router.get("/jobs", async (req, res) => {
   const { AWS_REGION, JOBS_TABLE } = getEnv();
   const ddb = DynamoDBDocumentClient.from(
@@ -111,9 +106,8 @@ router.get("/jobs", async (req, res) => {
   }
 });
 
-// ==================================================
 // POST /admin/retry-job — requeue failed job
-// ==================================================
+
 router.post("/retry-job", async (req, res) => {
   const { AWS_REGION, JOBS_TABLE, QUEUE_URL } = getEnv();
   const ddb = DynamoDBDocumentClient.from(

@@ -1,6 +1,8 @@
-// DYNAMO TABLE SETUP SCRIPT
 require("dotenv").config();
-const { DynamoDBClient, CreateTableCommand } = require("@aws-sdk/client-dynamodb");
+const {
+  DynamoDBClient,
+  CreateTableCommand,
+} = require("@aws-sdk/client-dynamodb");
 
 const qutUsername = process.env.QUT_USERNAME;
 const tableName = `n11713739-videos`;
@@ -38,8 +40,13 @@ async function createTable() {
     if (err.name === "ResourceInUseException") {
       console.log("Table already exists.");
     }
-    if (err.name === "CredentialsProviderError" || err.message?.includes("Token is expired")) {
-      console.log("AWS credentials or SSO session may be missing or expired. Run 'aws sso login' if using SSO.");
+    if (
+      err.name === "CredentialsProviderError" ||
+      err.message?.includes("Token is expired")
+    ) {
+      console.log(
+        "AWS credentials or SSO session may be missing or expired. Run 'aws sso login' if using SSO."
+      );
     }
   }
 }
