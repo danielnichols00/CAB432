@@ -1,1 +1,1 @@
-This is an app built for a university project. It's purpose is to leverage AWS services for a functional web app to store & transcode videos of different varieties.
+This is an app built for a university project. It's purpose is to leverage AWS services for a functional web app to store & transcode videos of different varieties. The AWS instances are no longer active so the application will no longer operate. However, feel free to browse the structure of the app and any code!
